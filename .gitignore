@@ -1,0 +1,9 @@
+# 데이터와 비밀값은 커밋하지 않는다
+.env
+data/
+logs/
+*.db
+*.duckdb
+*.faiss
+__pycache__/
+*.pyc

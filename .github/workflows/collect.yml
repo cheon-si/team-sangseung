@@ -1,0 +1,89 @@
+# 심야 지하철 실시간 수집을 GitHub Actions에서 매일 돌린다.
+#
+# 왜 여기서 돌리나: 노트북이 잠들거나 꺼지면 그날 밤이 통째로 사라진다.
+# 러너는 항상 켜져 있고, 공개 저장소라 실행 시간 제한이 없다.
+#
+# 시간대 주의: 러너는 UTC다. TZ를 Asia/Seoul로 못 박지 않으면
+# collect.py의 "22시까지 대기"가 다음 날 아침 7시(KST)를 겨냥한다.
+#
+# 예약 시각: 21:40 KST = 12:40 UTC. GitHub 예약은 수십 분 늦을 수 있어서
+# 20분 앞서 띄우고 스크립트가 22:00까지 기다리게 한다.
+#
+# 데이터 보존: 러너는 끝나면 사라지므로 수집분을 압축해 collected/ 에 커밋한다.
+# 하룻밤 원본 약 200MB → gzip 약 20MB.
+
+name: collect-night
+
+on:
+  schedule:
+    - cron: "40 12 * * *"   # 매일 21:40 KST
+  workflow_dispatch:
+    inputs:
+      once:
+        description: "true면 1틱만 수집하고 종료 (동작 확인용)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write            # 수집 결과를 저장소에 커밋하기 위해
+
+concurrency:
+  group: collect-night       # 예약과 수동 실행이 겹치면 API 한도를 두 배로 쓰므로 하나만
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Seoul
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300     # 21:40 시작 → 02:00 종료 = 4시간 20분. 여유 포함 5시간
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 수집 실행
+        env:
+          SEOUL_SUBWAY_KEY: ${{ secrets.SEOUL_SUBWAY_KEY }}
+        run: |
+          if [ "${{ inputs.once }}" = "true" ]; then
+            python collect.py --once
+          else
+            python collect.py
+          fi
+
+      # 수집이 중간에 죽어도 그때까지 받은 것은 남긴다 (if: always)
+      - name: 수집분 압축
+        if: always()
+        run: |
+          shopt -s nullglob
+          files=(data/raw/*.jsonl)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "수집된 파일 없음"; exit 0
+          fi
+          # 파일명에서 운영일을 뽑아 폴더로 쓴다 (예: arrival_20260916.jsonl → 20260916)
+          day=$(basename "${files[0]}" .jsonl | sed 's/.*_//')
+          mkdir -p "collected/$day"
+          for f in "${files[@]}"; do
+            gzip -c "$f" > "collected/$day/$(basename "$f").gz"
+          done
+          cp logs/collect.log "collected/$day/collect.log" 2>/dev/null || true
+          ls -la "collected/$day"
+
+      - name: 저장소에 커밋
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add collected/ || true
+          if git diff --cached --quiet; then
+            echo "커밋할 변경 없음"; exit 0
+          fi
+          git commit -m "collect: $(date +%Y-%m-%d) night"
+          # 예약 실행 사이에 누군가 push했을 수 있으니 rebase 후 push
+          git pull --rebase origin "${GITHUB_REF_NAME}" || true
+          git push origin HEAD:"${GITHUB_REF_NAME}"
