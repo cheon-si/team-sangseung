@@ -130,7 +130,11 @@ data/reference/last_train.jsonl     막차 시간표
 data/reference/timetable.jsonl      역별 시간표
 data/call_budget.json               운영일별 누적 호출 수
 logs/collect.log                    수집 로그 (실패 포함)
+collected/YYYYMMDD/*.jsonl.gz       GitHub Actions가 커밋한 하룻밤 수집분 (압축)
+collected/YYYYMMDD/collect.log      그 밤의 수집 로그
 ```
+
+`data/`와 `logs/`는 로컬 전용이라 git에 안 올라갑니다. GitHub Actions에서 돌린 밤은 `collected/`에만 남습니다.
 
 응답 원본을 그대로 남기고 각 행에 세 개 필드를 덧붙인다.
 
@@ -154,16 +158,44 @@ logs/collect.log                    수집 로그 (실패 포함)
 
 ---
 
-## 7. 수집이 끊기지 않게
+## 7. 어디서 돌리나
 
-노트북이 꺼지면 그날 밤 데이터가 사라진다. 둘 중 하나를 첫날에 정한다.
+**기본은 GitHub Actions입니다.** 노트북은 잠들거나 꺼지면 그날 밤이 통째로 사라지지만, 러너는 항상 켜져 있습니다. 공개 저장소라 실행 시간 제한도 없습니다.
 
-**A. 상시 켜두는 PC** 절전 모드를 끄고 스크립트를 띄워둔다. 가장 단순하지만 사람이 매일 확인해야 한다.
+| 항목 | 값 |
+|---|---|
+| 워크플로 | `.github/workflows/collect.yml` |
+| 예약 | 매일 12:40 UTC = 21:40 KST. 예약이 수십 분 늦을 수 있어 20분 앞서 띄우고 스크립트가 22:00까지 기다림 |
+| 시간대 | `TZ: Asia/Seoul`. 이걸 빼면 러너가 UTC로 돌아 22:00 대기가 다음 날 아침 7시를 겨냥함 |
+| 키 | 저장소 Secrets `SEOUL_SUBWAY_KEY`, `SEOUL_API_KEY` |
+| 결과 | 수집분을 gzip해 `collected/YYYYMMDD/`에 커밋. 하룻밤 약 20MB |
+| 실패 대비 | 수집이 중간에 죽어도 그때까지 받은 것은 커밋됨 (`if: always()`) |
 
-**B. 작업 스케줄러** 매일 21:55에 자동 실행하도록 걸어둔다.
+수동 실행은 Actions 탭에서 `collect-night` → Run workflow. `once`를 켜면 1틱만 받고 끝나서 동작 확인용으로 쓸 수 있습니다.
+
+### 노트북 스케줄러는 백업
+
+작업 스케줄러에 `lastcall-collect`가 매일 21:55로 등록돼 있습니다. **첫날(9/16) 밤은 이걸로 돌립니다.** GitHub Actions는 9/17부터입니다.
+
+**둘을 동시에 돌리면 안 됩니다.** 하루 호출이 1,600건으로 한도 1,000을 넘어 키가 막히고 양쪽 다 죽습니다.
+
+전환 절차입니다.
+
+1. 9/17 22:05 KST에 Actions 탭에서 `collect-night`가 돌고 있는지 확인
+2. 돌고 있으면 노트북 작업을 끕니다. 그 시점까지 양쪽 합쳐 40콜 정도라 한도에 문제없습니다
 
 ```powershell
-schtasks /create /tn "lastcall" /tr "C:\Users\ASUS\AppData\Local\Programs\Python\Python311\python.exe C:\Users\ASUS\Desktop\tong\lastcall-collector\collect.py" /sc daily /st 21:55
+Disable-ScheduledTask -TaskName "lastcall-collect"
 ```
 
-어느 쪽이든 **매일 아침 `logs/collect.log`와 `data/raw/` 파일 크기를 확인한다.** 조용히 실패하는 게 가장 위험하다.
+3. GitHub 예약이 건너뛴 날(Actions 탭에 그날 실행이 없으면)은 노트북 작업을 그날만 다시 켜서 돌립니다
+
+```powershell
+Enable-ScheduledTask -TaskName "lastcall-collect"
+```
+
+노트북으로 돌릴 때는 덮개를 닫지 말고 전원을 연결해 둡니다. 유휴 절전은 꺼져 있어 방치해도 되지만, 덮개 닫힘은 기본값이 절전입니다.
+
+### 매일 아침 확인
+
+Actions 탭에 어젯밤 실행이 초록색인지, `collected/`에 어젯밤 날짜 폴더가 생겼는지 봅니다. 압축 파일이 수 MB 이상이어야 정상입니다. 조용히 실패하는 게 가장 위험합니다.
