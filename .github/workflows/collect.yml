@@ -6,8 +6,11 @@
 # 시간대 주의: 러너는 UTC다. TZ를 Asia/Seoul로 못 박지 않으면
 # collect.py의 "22시까지 대기"가 다음 날 아침 7시(KST)를 겨냥한다.
 #
-# 예약 시각: 21:40 KST = 12:40 UTC. GitHub 예약은 수십 분 늦을 수 있어서
-# 20분 앞서 띄우고 스크립트가 22:00까지 기다리게 한다.
+# 예약 시각: 17:00 KST = 08:00 UTC. GitHub 예약은 크게 늦는다.
+# 9/17·9/18 실측으로 21:40 예약이 두 밤 연속 02:15에 떴다(4시간 35분 지연).
+# 그래서 5시간 앞서 띄우고 스크립트가 22:00까지 기다리게 한다. 정시에 뜨면 5시간 대기,
+# 4.5시간 늦어도 21:30에 떠서 창을 놓치지 않는다. 대기 시간은 공개 저장소라 무료다.
+# 창을 이미 지나쳐 뜬 경우 collect.py가 다음 밤까지 기다리지 않고 바로 실패로 끝낸다(--max-wait-hours).
 #
 # 데이터 보존: 러너는 끝나면 사라지므로 수집분을 압축해 collected/ 에 커밋한다.
 # 하룻밤 원본 약 200MB → gzip 약 20MB.
@@ -16,7 +19,7 @@ name: collect-night
 
 on:
   schedule:
-    - cron: "40 12 * * *"   # 매일 21:40 KST
+    - cron: "0 8 * * *"     # 매일 17:00 KST (지연 감안, 위 주석 참고)
   workflow_dispatch:
     inputs:
       once:
@@ -37,7 +40,7 @@ env:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 300     # 21:40 시작 → 02:00 종료 = 4시간 20분. 여유 포함 5시간
+    timeout-minutes: 600     # 17:00 정시 시작 → 22:00까지 대기 5시간 + 수집 4시간 = 9시간. 여유 포함 10시간
 
     steps:
       - uses: actions/checkout@v4

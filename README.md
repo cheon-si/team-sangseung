@@ -165,7 +165,7 @@ collected/YYYYMMDD/collect.log      그 밤의 수집 로그
 | 항목 | 값 |
 |---|---|
 | 워크플로 | `.github/workflows/collect.yml` |
-| 예약 | 매일 12:40 UTC = 21:40 KST. 예약이 수십 분 늦을 수 있어 20분 앞서 띄우고 스크립트가 22:00까지 기다림 |
+| 예약 | 매일 08:00 UTC = 17:00 KST. GitHub 예약이 4시간 반씩 늦게 뜬 것이 실측돼(9/17·9/18) 5시간 앞서 띄우고 스크립트가 22:00까지 기다림. 8시간 넘게 기다려야 하면(창을 지나쳐 뜬 경우) 바로 실패로 종료 |
 | 시간대 | `TZ: Asia/Seoul`. 이걸 빼면 러너가 UTC로 돌아 22:00 대기가 다음 날 아침 7시를 겨냥함 |
 | 키 | 저장소 Secrets `SEOUL_SUBWAY_KEY`, `SEOUL_API_KEY` |
 | 결과 | 수집분을 gzip해 `collected/YYYYMMDD/`에 커밋. 하룻밤 약 20MB |

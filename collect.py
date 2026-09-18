@@ -194,6 +194,8 @@ def main() -> None:
     parser.add_argument("--once", action="store_true", help="1회만 수집하고 종료")
     parser.add_argument("--dry-run", action="store_true", help="샘플키로 파싱만 검증")
     parser.add_argument("--no-bulk", action="store_true", help="도착정보 일괄 조회 건너뛰기")
+    parser.add_argument("--max-wait-hours", type=float, default=8,
+                        help="창 시작까지 이보다 오래 기다려야 하면 실패로 종료 (기본 8)")
     args = parser.parse_args()
 
     # 이 스크립트는 swopenapi.seoul.go.kr만 쓴다.
@@ -223,6 +225,13 @@ def main() -> None:
                        f"{args.interval}초 간격, 상한 {args.budget}콜")
 
     wait = (start - datetime.now()).total_seconds()
+    if wait > args.max_wait_hours * 3600:
+        # GitHub 예약이 몇 시간 늦게 떠서 어젯밤 창을 이미 지나친 경우다. 다음 밤까지
+        # 20시간을 기다리다 타임아웃으로 조용히 죽는 대신, 바로 실패로 끝내 Actions 탭에서 보이게 한다.
+        # (9/17 밤이 이렇게 사라졌다. 실패가 보여야 그날 백업을 켤 수 있다.)
+        log_line(LOG_PATH, f"창 시작까지 {wait / 3600:.1f}시간. 이번 실행은 창을 지나쳐 떴으므로 종료. "
+                           f"오늘 밤 수집은 수동 실행 또는 노트북 백업으로")
+        raise SystemExit(1)
     if wait > 0:
         log_line(LOG_PATH, f"시작까지 {wait / 60:.1f}분 대기")
         time_module.sleep(wait)
