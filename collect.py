@@ -16,6 +16,7 @@
     python collect.py                 # 오늘 밤 수집 (창 밖이면 시작까지 대기)
     python collect.py --once          # 1회만 수집하고 종료 (동작 확인용)
     python collect.py --dry-run       # 샘플키로 파싱만 검증, 파일 기록 없음
+    python collect.py --max-wait-hours 24   # 낮에 띄워 두고 22시까지 기다리게 할 때
 """
 
 import argparse
@@ -30,6 +31,7 @@ from utils import append_jsonl, fetch_json, load_env, log_line, service_date
 
 BASE_DIR = Path(__file__).resolve().parent
 RAW_DIR = BASE_DIR / "data" / "raw"
+COLLECTED_DIR = BASE_DIR / "collected"   # Actions가 밤마다 압축 커밋하는 폴더
 LOG_PATH = BASE_DIR / "logs" / "collect.log"
 BUDGET_PATH = BASE_DIR / "data" / "call_budget.json"
 
@@ -49,6 +51,9 @@ DEFAULT_BUDGET = 950
 PAGE_SIZE = 999
 # 샘플키는 5행까지만 준다. dry-run에서 파싱을 검증하려면 이 값을 써야 한다.
 SAMPLE_PAGE_SIZE = 5
+# 이 시각 전에 창 밖에서 뜬 실행은 "어젯밤 몫"으로 본다. 어젯밤 수집분이 없으면 실패로 끝낸다.
+# 이후에 뜬 실행은 "오늘 밤 몫인데 너무 일찍 뜬 것"이라 조용히 끝내고 뒤 예약에 맡긴다.
+MISSED_CHECK_UNTIL_HOUR = 12
 
 
 # ── 호출 예산 ─────────────────────────────────────────────
@@ -194,8 +199,8 @@ def main() -> None:
     parser.add_argument("--once", action="store_true", help="1회만 수집하고 종료")
     parser.add_argument("--dry-run", action="store_true", help="샘플키로 파싱만 검증")
     parser.add_argument("--no-bulk", action="store_true", help="도착정보 일괄 조회 건너뛰기")
-    parser.add_argument("--max-wait-hours", type=float, default=8,
-                        help="창 시작까지 이보다 오래 기다려야 하면 실패로 종료 (기본 8)")
+    parser.add_argument("--max-wait-hours", type=float, default=1.5,
+                        help="창 시작까지 이보다 오래 기다려야 하면 기다리지 않고 종료 (기본 1.5)")
     args = parser.parse_args()
 
     # 이 스크립트는 swopenapi.seoul.go.kr만 쓴다.
@@ -224,14 +229,24 @@ def main() -> None:
     log_line(LOG_PATH, f"수집 창 {start:%m-%d %H:%M} ~ {end:%m-%d %H:%M}, "
                        f"{args.interval}초 간격, 상한 {args.budget}콜")
 
-    wait = (start - datetime.now()).total_seconds()
+    now = datetime.now()
+    wait = (start - now).total_seconds()
     if wait > args.max_wait_hours * 3600:
-        # GitHub 예약이 몇 시간 늦게 떠서 어젯밤 창을 이미 지나친 경우다. 다음 밤까지
-        # 20시간을 기다리다 타임아웃으로 조용히 죽는 대신, 바로 실패로 끝내 Actions 탭에서 보이게 한다.
-        # (9/17 밤이 이렇게 사라졌다. 실패가 보여야 그날 백업을 켤 수 있다.)
-        log_line(LOG_PATH, f"창 시작까지 {wait / 3600:.1f}시간. 이번 실행은 창을 지나쳐 떴으므로 종료. "
-                           f"오늘 밤 수집은 수동 실행 또는 노트북 백업으로")
-        raise SystemExit(1)
+        # 예약을 하루 여러 개 걸어 두므로 창 밖에서 뜨는 실행이 매일 생긴다. 세 경우로 나눈다.
+        # GitHub 호스티드 러너는 job을 최대 6시간까지만 돌린다. 오래 기다리면 수집 도중 잘리므로
+        # 대기 상한(기본 1.5시간) + 수집 4시간이 6시간 안에 들어오게 했다.
+        last_night = start - timedelta(days=1)
+        if now.hour < MISSED_CHECK_UNTIL_HOUR:   # 이 분기에 오는 now는 02:00~20:30 사이
+            if (COLLECTED_DIR / last_night.strftime("%Y%m%d")).exists():
+                # ① 어젯밤은 다른 실행이 이미 수집했다 (대기열에 있다가 02시 이후 풀린 실행 등)
+                log_line(LOG_PATH, f"어젯밤({last_night:%m-%d}) 수집분이 이미 있음. 종료")
+                return
+            # ② 어젯밤 창을 통째로 놓쳤다. 9/17처럼 조용히 사라지지 않게 실패로 끝내 Actions 탭에 보이게 한다.
+            log_line(LOG_PATH, f"어젯밤({last_night:%m-%d}) 수집분이 없음. 창을 놓친 것으로 보고 실패 종료")
+            raise SystemExit(1)
+        # ③ 오늘 밤 몫인데 너무 일찍 떴다. 뒤 예약이 맡는다.
+        log_line(LOG_PATH, f"창 시작까지 {wait / 3600:.1f}시간. 너무 일찍 떴으므로 종료, 뒤 예약에 맡김")
+        return
     if wait > 0:
         log_line(LOG_PATH, f"시작까지 {wait / 60:.1f}분 대기")
         time_module.sleep(wait)
