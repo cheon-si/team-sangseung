@@ -14,7 +14,10 @@
 #   ② GitHub 호스티드 러너는 job을 최대 6시간까지만 돌린다. 16:00 예약이 정시에 뜨면
 #      22:00까지 6시간 기다리다 수집 시작 직전에 잘린다. (지연이 커서 아직 겪지는 않음)
 # 그래서 예약을 여러 개 걸고, 창 근처에 뜬 하나만 수집하게 했다. collect.py가 창 밖에서 뜬 실행을 가른다.
-#   - 창 시작까지 1.5시간 넘게 남음 → 너무 일찍 뜬 것. 바로 종료(성공)
+#   - 창 시작까지 1.5시간 넘게 남음 → 너무 일찍 뜬 것. 21:00(창 1시간 전)까지 최대 5시간 기다린 뒤
+#     relay.flag를 남기고 끝낸다. 아래 "릴레이" 단계가 새 실행(workflow_dispatch)을 요청한다.
+#     9/26·9/27에 예약이 18:43, 19:23에 떠서 그냥 끝났고, 밤을 살리려고 사람이 수동 실행을 걸어야 했다.
+#     GITHUB_TOKEN으로 만든 이벤트는 원래 새 실행을 만들지 않지만 workflow_dispatch는 예외다.
 #   - 창 시작까지 1.5시간 이내 → 기다렸다 수집. 대기 1.5h + 수집 4h라 6시간 안에 끝남
 #   - 창 안 → 바로 수집
 #   - 02:00~12:00에 뜸 → 어젯밤 몫. collected/에 어젯밤 폴더가 있으면 종료(성공), 없으면 실패(빨간색)
@@ -39,6 +42,7 @@ on:
 
 permissions:
   contents: write            # 수집 결과를 저장소에 커밋하기 위해
+  actions: write             # 릴레이: 새 수집 실행(workflow_dispatch)을 요청하기 위해
 
 concurrency:
   group: collect-night       # 예약과 수동 실행이 겹치면 API 한도를 두 배로 쓰므로 하나만
@@ -66,8 +70,16 @@ jobs:
           if [ "${{ inputs.once }}" = "true" ]; then
             python collect.py --once
           else
-            python collect.py
+            python collect.py --relay-file relay.flag
           fi
+
+      # 너무 일찍 뜬 실행이 기다렸다가 남긴 표시를 보고 새 수집 실행을 요청한다.
+      # 요청이 실패하면 그날 밤이 사라지므로 이 단계는 실패를 그대로 드러낸다(빨간색).
+      - name: 릴레이 (새 수집 실행 요청)
+        if: success() && hashFiles('relay.flag') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run collect-night --ref "${GITHUB_REF_NAME}"
 
       # 수집이 중간에 죽어도 그때까지 받은 것은 남긴다 (if: always)
       - name: 수집분 압축

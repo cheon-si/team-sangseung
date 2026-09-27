@@ -17,6 +17,7 @@
     python collect.py --once          # 1회만 수집하고 종료 (동작 확인용)
     python collect.py --dry-run       # 샘플키로 파싱만 검증, 파일 기록 없음
     python collect.py --max-wait-hours 24   # 낮에 띄워 두고 22시까지 기다리게 할 때
+    python collect.py --relay-file relay.flag   # (Actions 전용) 너무 일찍 뜨면 기다렸다가 릴레이 표시
 """
 
 import argparse
@@ -57,6 +58,10 @@ MISSED_CHECK_UNTIL_HOUR = 12
 # 모든 호출이 예외(연결 실패·타임아웃)로 끝난 틱이 이만큼 연속되면, 창이 끝날 때 실패로 종료한다.
 # 9/26 밤은 410콜이 전부 타임아웃이었는데 "수집된 파일 없음"으로 초록색 종료돼 다음 날에야 알았다.
 MAX_FAILED_TICKS = 3
+# 릴레이: 예약이 너무 일찍 뜨면 버리지 않고 창 시작 RELAY_LEAD_MIN분 전까지 기다렸다가 새 실행에 넘긴다.
+# 러너는 job 하나를 6시간까지만 돌리므로 한 번에 최대 RELAY_MAX_SLEEP_H시간만 기다리고, 부족하면 다시 릴레이한다.
+RELAY_LEAD_MIN = 60
+RELAY_MAX_SLEEP_H = 5
 
 
 # ── 호출 예산 ─────────────────────────────────────────────
@@ -211,6 +216,9 @@ def main() -> None:
     parser.add_argument("--no-bulk", action="store_true", help="도착정보 일괄 조회 건너뛰기")
     parser.add_argument("--max-wait-hours", type=float, default=1.5,
                         help="창 시작까지 이보다 오래 기다려야 하면 기다리지 않고 종료 (기본 1.5)")
+    parser.add_argument("--relay-file", default=None,
+                        help="(Actions 전용) 너무 일찍 떴을 때 기다렸다가 이 파일을 만들고 종료. "
+                             "워크플로가 파일을 보고 새 실행을 요청한다")
     args = parser.parse_args()
 
     # 이 스크립트는 swopenapi.seoul.go.kr만 쓴다.
@@ -257,7 +265,17 @@ def main() -> None:
             # ② 어젯밤 창을 통째로 놓쳤다. 9/17처럼 조용히 사라지지 않게 실패로 끝내 Actions 탭에 보이게 한다.
             log_line(LOG_PATH, f"어젯밤({last_night:%m-%d}) 수집분이 없음. 창을 놓친 것으로 보고 실패 종료")
             raise SystemExit(1)
-        # ③ 오늘 밤 몫인데 너무 일찍 떴다. 뒤 예약이 맡는다.
+        # ③ 오늘 밤 몫인데 너무 일찍 떴다.
+        if args.relay_file:
+            # 예약은 하루 8개 중 1~2개만, 그것도 제멋대로 뜬다(9/26 18:43, 9/27 19:23에 뜨고 끝남).
+            # 일찍 뜬 실행을 버리지 않고 창 시작 1시간 전까지 기다린 뒤 새 실행에 바통을 넘긴다.
+            # 새 실행(workflow_dispatch)은 몇 초 안에 뜨고 6시간 한도를 새로 받는다.
+            target = start - timedelta(minutes=RELAY_LEAD_MIN)
+            nap = min((target - now).total_seconds(), RELAY_MAX_SLEEP_H * 3600)
+            log_line(LOG_PATH, f"창 시작까지 {wait / 3600:.1f}시간. {nap / 60:.0f}분 기다린 뒤 새 실행으로 릴레이")
+            time_module.sleep(max(0, nap))
+            Path(args.relay_file).write_text(datetime.now().isoformat(), encoding="utf-8")
+            return
         log_line(LOG_PATH, f"창 시작까지 {wait / 3600:.1f}시간. 너무 일찍 떴으므로 종료, 뒤 예약에 맡김")
         return
     if wait > 0:
