@@ -54,6 +54,9 @@ SAMPLE_PAGE_SIZE = 5
 # 이 시각 전에 창 밖에서 뜬 실행은 "어젯밤 몫"으로 본다. 어젯밤 수집분이 없으면 실패로 끝낸다.
 # 이후에 뜬 실행은 "오늘 밤 몫인데 너무 일찍 뜬 것"이라 조용히 끝내고 뒤 예약에 맡긴다.
 MISSED_CHECK_UNTIL_HOUR = 12
+# 모든 호출이 예외(연결 실패·타임아웃)로 끝난 틱이 이만큼 연속되면, 창이 끝날 때 실패로 종료한다.
+# 9/26 밤은 410콜이 전부 타임아웃이었는데 "수집된 파일 없음"으로 초록색 종료돼 다음 날에야 알았다.
+MAX_FAILED_TICKS = 3
 
 
 # ── 호출 예산 ─────────────────────────────────────────────
@@ -104,11 +107,16 @@ def fetch_arrivals_bulk(api_key: str) -> tuple[list, str, int]:
 # ── 한 틱 수집 ────────────────────────────────────────────
 
 def collect_tick(api_key: str, day: str, budget: dict, dry_run: bool,
-                 with_bulk: bool) -> int:
-    """1회 수집. 반환값은 이번 틱에서 소모한 호출 수."""
+                 with_bulk: bool) -> tuple[int, int]:
+    """1회 수집. 반환값은 (이번 틱에서 소모한 호출 수, 그중 예외로 실패한 호출 수).
+
+    INFO-200(데이터 없음)은 운행이 끝난 노선의 정상 응답이라 실패로 세지 않는다.
+    예외는 응답 자체를 못 받은 경우(연결 실패, 타임아웃)다.
+    """
     now = datetime.now()
     stamp = now.strftime("%Y-%m-%d %H:%M:%S")
     calls = 0
+    errors = 0
     page_size = SAMPLE_PAGE_SIZE if dry_run else PAGE_SIZE
 
     # 1) 노선별 열차 위치 — 노선당 1콜
@@ -127,6 +135,7 @@ def collect_tick(api_key: str, day: str, budget: dict, dry_run: bool,
             position_rows.extend(rows)
         except Exception as error:
             calls += 1  # 실패도 호출로 잡힐 수 있으니 보수적으로 센다
+            errors += 1
             log_line(LOG_PATH, f"position {line} 실패: {type(error).__name__} {error}")
 
     # 2) 전체 역 도착정보 일괄 — 정식키에서만
@@ -146,6 +155,7 @@ def collect_tick(api_key: str, day: str, budget: dict, dry_run: bool,
                     log_line(LOG_PATH, f"arrival 일괄 부분 수신 {len(rows)}/{total}행")
         except Exception as error:
             calls += 1
+            errors += 1
             log_line(LOG_PATH, f"arrival 일괄 실패: {type(error).__name__} {error}")
 
     if dry_run:
@@ -153,7 +163,7 @@ def collect_tick(api_key: str, day: str, budget: dict, dry_run: bool,
                            f"호출 {calls} (파일 기록 안 함)")
         if position_rows:
             print(json.dumps(position_rows[0], ensure_ascii=False, indent=1)[:600])
-        return calls
+        return calls, errors
 
     if position_rows:
         append_jsonl(RAW_DIR / f"position_{day}.jsonl", position_rows)
@@ -164,7 +174,7 @@ def collect_tick(api_key: str, day: str, budget: dict, dry_run: bool,
     save_budget(budget)
     log_line(LOG_PATH, f"위치 {len(position_rows)}행 / 도착 {len(arrival_rows)}행 저장, "
                        f"호출 {calls} (누적 {budget[day]})")
-    return calls
+    return calls, errors
 
 
 # ── 수집 창 제어 ──────────────────────────────────────────
@@ -222,7 +232,10 @@ def main() -> None:
 
     if args.once or args.dry_run:
         day = service_date(datetime.now()).strftime("%Y%m%d")
-        collect_tick(api_key, day, budget, args.dry_run, with_bulk)
+        calls, errors = collect_tick(api_key, day, budget, args.dry_run, with_bulk)
+        if calls and errors == calls:
+            # 동작 확인용 1틱이 전부 실패했으면 Actions 탭에 빨갛게 보이게 한다
+            raise SystemExit(1)
         return
 
     start, end = window_bounds(args.start_hour, args.end_hour, datetime.now())
@@ -251,17 +264,35 @@ def main() -> None:
         log_line(LOG_PATH, f"시작까지 {wait / 60:.1f}분 대기")
         time_module.sleep(wait)
 
+    # 장애 중에도 수집은 멈추지 않는다. 도중에 풀리면 남은 밤을 살려야 하기 때문이다.
+    # 대신 전 호출 실패 틱이 MAX_FAILED_TICKS번 이상 이어진 적이 있으면 창이 끝날 때 실패로 종료한다.
+    failed_streak = 0
+    worst_streak = 0
+    failed_ticks = 0
+    total_ticks = 0
     while datetime.now() < end:
         day = service_date(datetime.now()).strftime("%Y%m%d")
         if used_today(budget, day) >= args.budget:
             log_line(LOG_PATH, f"일일 상한 {args.budget}콜 도달. 수집 중단")
             break
         tick_started = time_module.time()
-        collect_tick(api_key, day, budget, False, with_bulk)
+        calls, errors = collect_tick(api_key, day, budget, False, with_bulk)
+        total_ticks += 1
+        if calls and errors == calls:
+            failed_ticks += 1
+            failed_streak += 1
+            worst_streak = max(worst_streak, failed_streak)
+            if failed_streak == MAX_FAILED_TICKS:
+                log_line(LOG_PATH, f"{MAX_FAILED_TICKS}틱 연속 전 호출 실패. 수집은 계속하고 창 종료 시 실패 처리")
+        else:
+            failed_streak = 0
         elapsed = time_module.time() - tick_started
         time_module.sleep(max(0, args.interval - elapsed))
 
-    log_line(LOG_PATH, "수집 창 종료")
+    log_line(LOG_PATH, f"수집 창 종료 (틱 {total_ticks}, 전 호출 실패 틱 {failed_ticks}, 최장 연속 {worst_streak})")
+    if worst_streak >= MAX_FAILED_TICKS:
+        # 압축·커밋 단계는 if: always()라 그때까지 받은 데이터는 그대로 남는다
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
