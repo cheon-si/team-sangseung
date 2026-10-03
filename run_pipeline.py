@@ -16,7 +16,7 @@ import time
 # (이름, 명령 인자). 순서대로 실행하고 하나라도 실패하면 멈춘다.
 STEPS = [
     ("1 전처리", ["preprocess.py", "--nights", "all"]),
-    # ("3a 막차 쌍", ["lasttrain.py"]),
+    ("3a 막차 쌍", ["lasttrain.py"]),
     # ("2 밤별 점검", ["night_qa.py", "--all"]),
     # ("3b 실측 Y", ["label_y.py"]),
     # ("4 지연 분포", ["fit_delay.py"]),
