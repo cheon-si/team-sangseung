@@ -22,7 +22,8 @@ STEPS = [
     ("4 지연 분포", ["fit_delay.py", "--train-until", "20261002"]),
     # ("6 검증", ["validate.py", "--mode", "confirm"]),
     # ("6 최종", ["validate.py", "--mode", "final"]),
-    # ("8 앱 JSON", ["export_for_app.py"]),
+    ("7 역 대안", ["build_station_alt.py"]),
+    ("8 앱 JSON", ["export_for_app.py"]),
 ]
 
 
