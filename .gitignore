@@ -1,9 +1,13 @@
 # 데이터와 비밀값은 커밋하지 않는다
 .env
-data/
+/data/
+output/
 logs/
 *.db
 *.duckdb
 *.faiss
 __pycache__/
 *.pyc
+sample/
+web/node_modules/
+web/dist/

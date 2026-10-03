@@ -1,0 +1,5 @@
+# 분석 파이프라인용 (Actions 수집 환경에는 넣지 않음. 수집기는 표준 라이브러리만 씀)
+pandas>=3.0
+numpy
+matplotlib
+scikit-learn>=1.9   # GaussianMixture, LogisticRegression
