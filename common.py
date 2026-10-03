@@ -169,3 +169,29 @@ def transfer_stations() -> pd.DataFrame:
     ]).drop_duplicates()
     rows["station_id"] = rows["station"].replace({"이수": "총신대입구"})
     return rows.sort_values(["station_id", "line"]).reset_index(drop=True)
+
+
+# ── 확증 세트와 통계 보조 ───────────────────────────────────
+
+# 10/2 이후 수집분은 확증 세트. 규칙·파라미터를 고르는 판단에는 이 날짜 전 밤만 쓴다(plan.md 작업 6).
+CONFIRM_START = "20261002"
+
+# t 분포 양측 95% 임계값(자유도 1~30). scipy 없이 잭나이프 구간에 쓴다. 30 초과는 1.96에 가깝게 근사.
+T975 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262,
+        10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145, 15: 2.131, 16: 2.120, 17: 2.110,
+        18: 2.101, 19: 2.093, 20: 2.086, 21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064, 25: 2.060,
+        26: 2.056, 27: 2.052, 28: 2.048, 29: 2.045, 30: 2.042}
+
+
+def t975(df: int) -> float:
+    return T975.get(df, 1.96 + 2.5 / df) if df >= 1 else float("nan")
+
+
+def sign_test_p(k: int, n: int) -> float:
+    """양측 부호검정 p값. n번 중 같은 부호가 k번(k ≥ n/2 가정)."""
+    from math import comb
+    if n == 0:
+        return 1.0
+    k = max(k, n - k)
+    tail = sum(comb(n, i) for i in range(k, n + 1)) / 2 ** n
+    return min(1.0, 2 * tail)

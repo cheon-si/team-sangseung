@@ -19,7 +19,7 @@ STEPS = [
     ("3a 막차 쌍", ["lasttrain.py"]),
     # ("2 밤별 점검", ["night_qa.py", "--all"]),
     # ("3b 실측 Y", ["label_y.py"]),
-    # ("4 지연 분포", ["fit_delay.py"]),
+    ("4 지연 분포", ["fit_delay.py", "--train-until", "20261002"]),
     # ("6 검증", ["validate.py", "--mode", "confirm"]),
     # ("6 최종", ["validate.py", "--mode", "final"]),
     # ("8 앱 JSON", ["export_for_app.py"]),
