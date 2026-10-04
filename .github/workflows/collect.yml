@@ -57,7 +57,12 @@ jobs:
     timeout-minutes: 350     # 대기 최대 1.5시간 + 수집 4시간 + 준비·커밋. 러너 상한 6시간(360분) 안쪽
 
     steps:
+      # ref를 비워 두면 예약이 걸린 시점의 커밋을 받는다. 수집 중에 뜬 예약은 대기열에서 02:00 이후 풀리는데,
+      # 그 커밋에는 방금 push된 어젯밤 collected/ 폴더가 없어 "어젯밤 없음"으로 빨간 실패를 냈다(9/30·10/2·10/3).
+      # 브랜치 이름을 주면 job이 실제로 시작할 때의 최신 커밋을 받는다.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
 
       - uses: actions/setup-python@v5
         with:
