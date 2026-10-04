@@ -67,13 +67,18 @@ def build(train_until: str | None) -> tuple[dict, dict, dict]:
     by_cell_d = {k: night_sorted_dict(g) for k, g in d.groupby("dist_key")}
     nights = sorted(d["night"].unique())
     deps = dep_dists(load_dep_delays(nights))
+    last_a = dep_dists(load_dep_delays(nights, status="arr"))     # c.LASTK_A_LINES의 타고 온 열차 분포
     tags = {n: c.day_info(n) for n in nights}
 
     rows = []
     for _, r in pairs.iterrows():
         key = cell_of(cells, r["from_line"], r["day_type"], r["a_hour_band"])
-        jk1 = jackknife_p(by_cell.get(key, []), r["buffer_sec"])
-        jk = jackknife_conv(by_cell_d.get(key, {}), deps.get((r["to_line"], r["day_type"]), {}), r["buffer_sec"])
+        a_d = by_cell_d.get(key, {})
+        if r["from_line"] in c.LASTK_A_LINES and last_a.get((r["from_line"], r["day_type"])):
+            a_d = last_a[(r["from_line"], r["day_type"])]
+            key = f"{r['from_line']}|{r['day_type']}|last3"
+        jk1 = jackknife_p(list(a_d.values()), r["buffer_sec"])
+        jk = jackknife_conv(a_d, deps.get((r["to_line"], r["day_type"]), {}), r["buffer_sec"])
         if jk["p"] is None:      # D 출발 분포가 없으면 1차로 대체하고 표시
             jk = {**jk1, "ci_note": f"first_order_fallback:{jk1['ci_note']}"}
         cell = cells.set_index("dist_key").loc[key] if key in set(cells["dist_key"]) else None
@@ -90,6 +95,8 @@ def build(train_until: str | None) -> tuple[dict, dict, dict]:
             "p_success": jk["p"], "ci_low": jk["ci_low"], "ci_high": jk["ci_high"], "ci_note": jk["ci_note"],
             "p_first": jk1["p"],
             "dep_fallback": "/".join(deps["_fallback"].get((r["to_line"], r["day_type"]), ())) or None,
+            "arr_fallback": ("/".join(last_a["_fallback"].get((r["from_line"], r["day_type"]), ())) or None)
+                            if r["from_line"] in c.LASTK_A_LINES else None,
             "p_timetable": 1.0 if r["buffer_sec"] >= 0 else 0.0,
             "n_delay_obs": int(cell["n_obs"]) if cell is not None else 0,
             "n_nights": jk["n_nights"], "dist_key": key,
@@ -114,6 +121,16 @@ def build(train_until: str | None) -> tuple[dict, dict, dict]:
             "median_sec": cl["median_sec"], "p90_sec": cl["p90_sec"], "thin": bool(cl["thin"]),
         }.items()}
         dists[cl["dist_key"]]["cdf"] = [round(float(x), 4) for x in g["cdf_ecdf"]]
+    for k, nd in last_a.items():
+        if k == "_fallback" or k[0] not in c.LASTK_A_LINES or not nd:
+            continue
+        line, day = k
+        mat = np.vstack([np.searchsorted(v, GRID, side="right") / len(v) for v in nd.values()])
+        allv = np.concatenate(list(nd.values()))
+        dists[f"{line}|{day}|last3"] = {"line": line, "day_type": day, "hour_band": "last3",
+                                        "n_obs": int(len(allv)), "n_nights": len(nd),
+                                        "median_sec": float(np.median(allv)), "p90_sec": float(np.quantile(allv, 0.9)),
+                                        "thin": len(nd) < 4, "cdf": [round(float(x), 4) for x in mat.mean(axis=0)]}
     cdf = {"meta": {**meta, "grid_sec": [int(x) for x in GRID], "grid_step_sec": 15}, "dists": dists}
 
     with open(c.PROCESSED_DIR / "station_alt_base.json", encoding="utf-8") as f:

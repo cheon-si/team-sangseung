@@ -137,16 +137,18 @@ def jackknife_conv(a_nights: dict, d_nights: dict, b: float) -> dict:
 
 # ── 2) 학습 데이터 구성 ─────────────────────────────────────
 
-def load_dep_delays(nights: list[str]) -> pd.DataFrame:
-    """D 출발 지연 표본: 시간표 (노선, 역, 방향)별 마지막 LAST_K편 출발 행의 관측 출발 지연."""
+def load_dep_delays(nights: list[str], status: str = "dep") -> pd.DataFrame:
+    """마지막 LAST_K편 지연 표본: 시간표 (노선, 역, 방향)별 마지막 LAST_K편 행의 관측 지연.
+    status='dep'이면 출발(D 분포), 'arr'이면 도착(LASTK_A_LINES의 A 분포)."""
     from preprocess import load_timetable
     ev = pd.read_csv(c.PROCESSED_DIR / "delay_events.csv",
                      dtype={"night": str, "line": str, "uid": str})
-    ev = ev[(ev["status"] == "dep") & ev["in_window"] & ~ev["tt_unknown"] & ev["night"].isin(nights)]
+    ev = ev[(ev["status"] == status) & ev["in_window"] & ~ev["tt_unknown"] & ev["night"].isin(nights)]
+    tcol = "dep_sec" if status == "dep" else "arr_sec"
     last = set()
     for tag in ("DAY", "SAT", "END"):
         tt = load_timetable(tag)
-        ok = tt[tt["dep_sec"].notna()].sort_values("dep_sec")
+        ok = tt[tt[tcol].notna() & ~tt["pass_through"]].sort_values(tcol)
         last |= set(ok.groupby(["line", "nm", "방향"]).tail(LAST_K)["uid"])
     ev = ev[ev["uid"].isin(last)].copy()
     ev["src_rank"] = (ev["src"] != "pos").astype(int)
@@ -157,7 +159,8 @@ def load_dep_delays(nights: list[str]) -> pd.DataFrame:
 class FoldModel:
     """학습 밤 집합 하나로 만든 지연 분포들(셀별 A 도착, 노선·요일별 D 출발)과 로지스틱."""
 
-    def __init__(self, train_nights: list[str], delays: pd.DataFrame, deps: pd.DataFrame, labels: pd.DataFrame):
+    def __init__(self, train_nights: list[str], delays: pd.DataFrame, deps: pd.DataFrame, labels: pd.DataFrame,
+                 last_arr: pd.DataFrame | None = None):
         from fit_delay import assign_keys, decide_bands
         d = delays[delays["night"].isin(train_nights)].copy()
         rules, _ = decide_bands(d)
@@ -169,6 +172,8 @@ class FoldModel:
             self.cell_bands.setdefault((line, day), []).append(band)
         dp = deps[deps["night"].isin(train_nights)]
         self.deps = dep_dists(dp)
+        la = last_arr[last_arr["night"].isin(train_nights)] if last_arr is not None else None
+        self.last_a = dep_dists(la) if la is not None and len(la) else {}
         tr = labels[labels["night"].isin(train_nights) & (labels["label_grade"] == "main")]
         self.clim = tr[tr["contested"]].groupby("day_type")["y"].mean().to_dict()
         self.logit = fit_logit(tr)
@@ -184,6 +189,8 @@ class FoldModel:
     def predict(self, from_line, to_line, day, band, b) -> dict:
         key = self.cell_of(from_line, day, band)
         A = self.cells.get(key, {})
+        if from_line in c.LASTK_A_LINES and self.last_a.get((from_line, day)):
+            A, key = self.last_a[(from_line, day)], f"{from_line}|{day}|last{LAST_K}"
         D = self.deps.get((to_line, day), {})
         p1 = float(np.mean([np.searchsorted(v, b, side="right") / len(v) for v in A.values()])) if A else np.nan
         p2 = float(conv_matrix(A, D, b)[0].mean()) if A and D else np.nan
@@ -253,6 +260,7 @@ def lono(mode: str) -> pd.DataFrame:
 
     delays = load_delays(None)
     deps = load_dep_delays(pool)
+    last_arr = load_dep_delays(pool, status="arr")
     y = pd.read_csv(c.PROCESSED_DIR / "y_events.csv", dtype={"night": str})
     pairs = pd.read_csv(c.PROCESSED_DIR / "last_train_pairs.csv",
                         dtype={"from_line": str, "to_line": str, "a_hour_band": str})
@@ -262,7 +270,7 @@ def lono(mode: str) -> pd.DataFrame:
     preds = []
     for n in eval_nights:
         train = [x for x in pool if x != n]
-        fm = FoldModel(train, delays, deps, base_labels)
+        fm = FoldModel(train, delays, deps, base_labels, last_arr)
         for r in labels[labels["night"] == n].itertuples():
             pr = fm.predict(r.from_line, r.to_line, r.day_type, r.a_hour_band, r.buffer_sec)
             preds.append({"night": n, "variant": r.variant, "combo_id": r.combo_id, "tt_tag": r.tt_tag,

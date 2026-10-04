@@ -40,7 +40,7 @@ export default function ResultCard({ row }) {
         지연과 갈아탈 막차의 출발 지연을 모두 반영하면 성공 확률은 <b>{pct(row.p_success)}</b>입니다. 갈아탈 막차가
         시간표대로 정시에 떠난다고만 가정하면 {pct(row.p_first)}입니다.
         {row.thin && " 이 노선·시간대는 밤마다 지연 차이가 커서 구간이 넓습니다."}
-        {row.dep_fallback && " 갈아탈 노선의 이 요일 출발 기록이 부족해 다른 요일 기록을 빌려 썼습니다."}
+        {(row.dep_fallback || row.arr_fallback) && " 이 요일의 막차 기록이 부족해 다른 요일 기록을 빌려 썼습니다."}
       </p>
     </div>
   );

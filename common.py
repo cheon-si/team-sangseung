@@ -195,3 +195,7 @@ def sign_test_p(k: int, n: int) -> float:
     k = max(k, n - k)
     tail = sum(comb(n, i) for i in range(k, n + 1)) / 2 ** n
     return min(1.0, 2 * tail)
+
+# 10/2 결정표 11번(작업 5-8): 막차 실측 도착 지연이 24시대 셀 분포와 다른 노선(sup > 0.05, 순열 p < 0.05, 확증 전 밤).
+# 이 노선들은 타고 온 열차 분포를 "방향별 마지막 3편 도착 지연"으로 쓴다. 막차가 일반 열차보다 30~40초 더 늦었다.
+LASTK_A_LINES = {"2", "4", "5"}
