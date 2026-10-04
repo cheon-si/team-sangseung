@@ -4,6 +4,24 @@
 
 이 계획은 9/25~9/26에 저장소를 직접 점검한 결과로 짰습니다. 점검 범위는 코드, `collected/` 8밤, `data/reference/`, `data/aux/`입니다. 초안을 쓴 뒤 세 방향에서 검토했습니다. 근거·실현성, 통계 설계, 그리고 다른 계열 모델(gpt-6-astra)의 구현 계약 검토입니다. 확인하지 않은 내용은 "추정"으로 표시했습니다. 소요 시간은 모두 추정입니다.
 
+## 진행 현황 (10/4)
+
+| 작업 | 상태 | 산출물 |
+|---|---|---|
+| 0 준비 | 완료 | `.gitignore`, `requirements-analysis.txt`, `run_pipeline.py` |
+| 1 전처리 | 완료 | `common.py`, `preprocess.py` |
+| 2 밤별 점검 | 완료 | `night_qa.py` (TRUNC_W 690, EARLY_E 70 확정) |
+| 3a 막차 쌍 | 완료 | `lasttrain.py` |
+| 3b 실측 Y | 완료 | `label_y.py` |
+| 4 지연 분포 | 완료 | `fit_delay.py` |
+| 5 미해결 | 완료 | `issues.py`, `fetch_notice.py`, `프로젝트_방향_결정.md` 9장 |
+| 6 검증 | 드라이런 완료, 확증은 10/14 | `validate.py --mode dry/confirm/final` |
+| 7 역 대안 | 완료 | `build_station_alt.py` |
+| 8 웹 | 로컬 완료, Vercel 연결 대기(시원) | `export_for_app.py`, `web/` |
+| 9 보고서 | 초안(저장소 밖 `../report/draft.md`) | `fill_report.py` |
+
+계획 대비 바뀐 결정은 `프로젝트_방향_결정.md` 9장에 모았다. 주요 변경: 2차 모형을 주 모형으로, 2·4·5호선 타고 온 열차 분포를 마지막 3편으로, 셀 병합은 표본 수로만, 시간표 적합 기준 0.6, 위치 API 새벽 공백은 밤 상태에서 제외, 8호선 도착 API 도착 제외. 10/2 체크포인트는 일정이 밀려 "확증 전 밤으로만 판단"하는 방식으로 대신했다.
+
 ## 목적
 
 1. 10/12까지 파이프라인 전체를 `run_pipeline.py` 한 번으로 돌게 만듭니다. 순서는 전처리 → 실측 Y → 지연 분포 → 검증 → 앱 JSON입니다. 10/14 이후에는 코드를 고치지 않고 데이터만 바꿔 다시 돌립니다.
