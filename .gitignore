@@ -1,5 +1,7 @@
 # 데이터와 비밀값은 커밋하지 않는다
 .env
+.env.local
+*.local
 /data/
 output/
 logs/

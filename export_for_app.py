@@ -7,6 +7,7 @@
 
 판정(타세요/도박/대안)은 넣지 않는다. 앱 src/config.js 의 임계값으로 계산해서,
 팀원이 파이썬 없이 임계값을 바꿀 수 있게 한다.
+끝에서 export_route.py가 귀가 경로용 5종(network, trips_DAY/SAT/END, route_dists)을 같은 지연 분포 객체로 만든다.
 검증에 실패하면 종료 코드 1.
 
 사용: python export_for_app.py [--train-until YYYYMMDD]
@@ -22,6 +23,7 @@ import numpy as np
 import pandas as pd
 
 import common as c
+import export_route
 from fit_delay import GRID, load_delays
 from validate import dep_dists, jackknife_conv, jackknife_p, load_dep_delays, night_sorted, night_sorted_dict
 
@@ -56,7 +58,8 @@ def clean(x):
     return x
 
 
-def build(train_until: str | None) -> tuple[dict, dict, dict]:
+def build(train_until: str | None) -> tuple[dict, dict, dict, dict]:
+    """앱 JSON 3종과, 귀가 경로 분포(export_route)가 같은 객체를 쓰도록 by_cell_d·last_a·deps·학습 밤을 함께 돌려준다."""
     pairs = pd.read_csv(c.PROCESSED_DIR / "last_train_pairs.csv",
                         dtype={"from_line": str, "to_line": str, "a_hour_band": str})
     cells = pd.read_csv(c.PROCESSED_DIR / "delay_cells.csv", dtype={"line": str, "hour_band": str})
@@ -146,7 +149,8 @@ def build(train_until: str | None) -> tuple[dict, dict, dict]:
             s["worst_p"] = round(float(agg.loc[s["station"], "min"]), 4)
             s["median_p"] = round(float(agg.loc[s["station"], "median"]), 4)
     alt["meta"].update({k: meta[k] for k in ("generated_at", "commit", "provisional", "nights")})
-    return prob, cdf, alt
+    route_src = {"by_cell_d": by_cell_d, "last_a": last_a, "deps": deps, "nights": nights, "meta": meta}
+    return prob, cdf, alt, route_src
 
 
 def validate_json(prob: dict, cdf: dict, alt: dict) -> list[str]:
@@ -177,7 +181,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="앱 JSON 내보내기 (plan.md 작업 8)")
     parser.add_argument("--train-until", default=c.CONFIRM_START)
     args = parser.parse_args()
-    prob, cdf, alt = build(args.train_until)
+    prob, cdf, alt, route_src = build(args.train_until)
     errs = validate_json(prob, cdf, alt)
     if errs:
         print("검증 실패:\n  " + "\n  ".join(errs))
@@ -192,6 +196,10 @@ def main() -> None:
     rows = pd.DataFrame(prob["rows"])
     print(f"합계 {total / 1024:.0f}KB, 조합 행 {len(rows)}, 확률 있음 {int(rows['p_success'].notna().sum())}, "
           f"구간 있음 {int(rows['ci_low'].notna().sum())}, 밤 {prob['meta']['nights']}")
+    errs = export_route.write_route_files(route_src, cdf, BAND_MEMBERS, WEB_DATA)
+    if errs:
+        print("귀가 경로 데이터 검증 실패:\n  " + "\n  ".join(errs))
+        sys.exit(1)
 
 
 if __name__ == "__main__":

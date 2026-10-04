@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { pct } from "../data";
+import { pctText } from "../format";
 
 // 탭 2. 환승역 위험 지도. 지도 타일 없이 위경도를 그대로 찍은 산점도(키·외부 호출 없음).
 // 색 = 그 역에서 시간표상 갈아탈 수 있는 평일 조합 중 최악 성공 확률, 크기 = 23시·0시 하차 인원(2026-07).
@@ -47,7 +47,7 @@ export default function MapTab({ data, onPick }) {
       <div className="text-sm min-h-6">
         {hover && (
           <span>
-            <b>{hover.station}</b> ({hover.lines.join("·")}호선) · 최악 {pct(hover.worst_p)} · 중앙 {pct(hover.median_p)} ·
+            <b>{hover.station}</b> ({hover.lines.join("·")}호선) · 최악 {pctText(hover.worst_p)} · 중앙 {pctText(hover.median_p)} ·
             심야 하차 {hover.night_alight?.toLocaleString()}명/월
           </span>
         )}

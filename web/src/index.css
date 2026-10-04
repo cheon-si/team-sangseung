@@ -1,1 +1,164 @@
 @import "tailwindcss";
+
+/* 밤에 쓰는 앱: 어두운 남색 계열 고대비. 판정 색(safe/gamble/danger)의 기준은 config.js THRESHOLDS. */
+@theme {
+  --font-sans: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, system-ui, "Apple SD Gothic Neo",
+    "Noto Sans KR", sans-serif;
+  --color-night-950: #060c1b;
+  --color-night-900: #0b1428;
+  --color-night-800: #111d3a;
+  --color-night-700: #1a2a4f;
+  --color-night-600: #26395f;
+  --color-night-500: #3a4f80;
+  --color-ink-100: #eef2fb;
+  --color-ink-300: #b9c4de;
+  --color-ink-400: #92a0c0;
+  --color-ink-500: #6f7da0;
+  --color-safe: #34d399;
+  --color-gamble: #fbbf24;
+  --color-danger: #fb7185;
+  --color-me: #3b82f6;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-night-950);
+  color: var(--color-ink-100);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+  word-break: keep-all;
+}
+
+/* 어두운 화면의 스크롤바 (밝은 기본 스크롤바가 튀지 않게) */
+.dark-scroll {
+  scrollbar-color: var(--color-night-600) transparent;
+  scrollbar-width: thin;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* ── 카카오맵 CustomOverlay 에 넣는 DOM (React 밖에서 만든다) ── */
+.map-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 34px;
+  padding: 0 11px 0 9px;
+  border-radius: 999px;
+  border: 2px solid #fff;
+  color: #0b1428;
+  font: 700 14px/1 var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 4px 14px rgb(6 12 27 / 0.35);
+  cursor: pointer;
+  white-space: nowrap;
+  transform: translateY(-10px);
+}
+.map-badge small {
+  font-weight: 600;
+  font-size: 12px;
+  opacity: 0.85;
+}
+.map-badge svg {
+  width: 15px;
+  height: 15px;
+}
+
+.map-pin {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  border-radius: 12px;
+  background: #0b1428;
+  color: #eef2fb;
+  font: 700 13px/1 var(--font-sans);
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgb(6 12 27 / 0.35);
+  position: relative;
+  transform: translateY(-8px);
+}
+.map-pin::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -6px;
+  margin-left: -6px;
+  border: 6px solid transparent;
+  border-bottom: 0;
+  border-top-color: #0b1428;
+}
+.map-pin b {
+  font-weight: 600;
+  color: #92a0c0;
+  font-size: 11px;
+}
+.map-pin svg {
+  width: 14px;
+  height: 14px;
+}
+
+.map-stop {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2.5px solid currentColor;
+}
+
+.me-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--color-me);
+  border: 3px solid #fff;
+  box-shadow: 0 0 0 0 rgb(59 130 246 / 0.5);
+  animation: me-pulse 2s infinite;
+}
+@keyframes me-pulse {
+  70% {
+    box-shadow: 0 0 0 14px rgb(59 130 246 / 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgb(59 130 246 / 0);
+  }
+}
+
+/* 바텀시트 모달 등장 */
+.modal-in {
+  animation: modal-in 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.modal-fade {
+  animation: modal-fade 0.2s ease-out;
+}
+@keyframes modal-in {
+  from {
+    transform: translateY(40px);
+    opacity: 0;
+  }
+}
+@keyframes modal-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .me-dot,
+  .modal-in,
+  .modal-fade {
+    animation: none;
+  }
+}

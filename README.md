@@ -40,6 +40,13 @@ $env:SEOUL_API_KEY = "일반키"
 
 **공공데이터포털(data.go.kr) 키** — 열린데이터광장과 완전히 별개의 사이트다. 기상 데이터를 지연 설명 변수로 넣기로 하면 그때 발급받으면 된다. 노선별 지연시간 CSV는 로그인 후 브라우저로 직접 내려받으면 되므로 키가 필요 없다.
 
+### 웹앱 지도 키 (카카오맵 JavaScript 키)
+
+- `web/.env.example`을 `web/.env.local`로 복사해 `VITE_KAKAO_JS_KEY=`에 Kakao Developers에서 발급한 **JavaScript 키**를 넣는다. `*.local`은 git에 안 올라간다.
+- Kakao Developers > 앱 > 플랫폼 > Web 사이트 도메인에 `http://localhost:3000`(개발 서버 포트, `web/vite.config.js`)과 배포 도메인(Vercel)을 등록한다. 등록이 없으면 지도 로드가 시간 초과로 실패한다.
+- Vercel 배포: `.env.local`은 올라가지 않으므로 Vercel 프로젝트 Settings > Environment Variables에 `VITE_KAKAO_JS_KEY`를 넣고 다시 배포한다. 빠지면 지도 자리에 "지도를 불러오지 못했어요"가 뜬다(경로·확률 시트는 그대로 동작).
+- JavaScript 키는 브라우저 번들에 그대로 들어가는 공개 전제 키다. 사용처 제한은 위 도메인 등록으로 한다.
+
 ---
 
 ## 1. 설치
