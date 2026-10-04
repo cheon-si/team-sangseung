@@ -1,6 +1,7 @@
 """작업 8 1단계. 파이프라인 결과 → 앱이 읽는 JSON 3종 (web/public/data/).
 
     prob_table.json   조합 × 요일 유형(DAY/SAT/END)별 성공 확률, 잭나이프 구간, 시간표 여유
+                      p_success = 2차 모형(갈아탈 막차 출발 지연까지 반영, 주 모형), p_first = 1차(정시 출발 가정)
     delay_cdf.json    셀별 밤 균등 ECDF 격자 (−120~+1800초, 15초)
     station_alt.json  환승역 좌표·대안 + 역별 최악·중앙 성공 확률(평일)
 
@@ -22,7 +23,7 @@ import pandas as pd
 
 import common as c
 from fit_delay import GRID, load_delays
-from validate import jackknife_p, night_sorted
+from validate import dep_dists, jackknife_conv, jackknife_p, load_dep_delays, night_sorted, night_sorted_dict
 
 WEB_DATA = c.BASE_DIR / "web" / "public" / "data"
 BAND_MEMBERS = {"22": {"22"}, "23": {"23"}, "24": {"24"}, "23-24": {"23", "24"},
@@ -63,13 +64,18 @@ def build(train_until: str | None) -> tuple[dict, dict, dict]:
     cmap = pd.read_csv(c.PROCESSED_DIR / "delay_cell_map.csv", dtype={"night": str, "uid": str})
     d = load_delays(train_until).merge(cmap[["night", "uid", "dist_key"]], on=["night", "uid"])
     by_cell = {k: night_sorted(g) for k, g in d.groupby("dist_key")}
+    by_cell_d = {k: night_sorted_dict(g) for k, g in d.groupby("dist_key")}
     nights = sorted(d["night"].unique())
+    deps = dep_dists(load_dep_delays(nights))
     tags = {n: c.day_info(n) for n in nights}
 
     rows = []
     for _, r in pairs.iterrows():
         key = cell_of(cells, r["from_line"], r["day_type"], r["a_hour_band"])
-        jk = jackknife_p(by_cell.get(key, []), r["buffer_sec"])
+        jk1 = jackknife_p(by_cell.get(key, []), r["buffer_sec"])
+        jk = jackknife_conv(by_cell_d.get(key, {}), deps.get((r["to_line"], r["day_type"]), {}), r["buffer_sec"])
+        if jk["p"] is None:      # D 출발 분포가 없으면 1차로 대체하고 표시
+            jk = {**jk1, "ci_note": f"first_order_fallback:{jk1['ci_note']}"}
         cell = cells.set_index("dist_key").loc[key] if key in set(cells["dist_key"]) else None
         rows.append({k: clean(v) for k, v in {
             "combo_id": r["combo_id"], "tt_tag": r["tt_tag"], "day_type": r["day_type"],
@@ -82,6 +88,8 @@ def build(train_until: str | None) -> tuple[dict, dict, dict]:
             "walk_sec": int(r["walk_sec"]), "walk_src": r["walk_src"], "distance_m": r["distance_m"],
             "buffer_sec": int(r["buffer_sec"]), "buffer_min": round(r["buffer_sec"] / 60, 1),
             "p_success": jk["p"], "ci_low": jk["ci_low"], "ci_high": jk["ci_high"], "ci_note": jk["ci_note"],
+            "p_first": jk1["p"],
+            "dep_fallback": "/".join(deps["_fallback"].get((r["to_line"], r["day_type"]), ())) or None,
             "p_timetable": 1.0 if r["buffer_sec"] >= 0 else 0.0,
             "n_delay_obs": int(cell["n_obs"]) if cell is not None else 0,
             "n_nights": jk["n_nights"], "dist_key": key,
@@ -91,7 +99,7 @@ def build(train_until: str | None) -> tuple[dict, dict, dict]:
     meta = {"generated_at": datetime.now().isoformat(timespec="seconds"),
             "commit": subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True,
                                      text=True, cwd=c.BASE_DIR).stdout.strip(),
-            "provisional": True, "ci_method": "night_jackknife_t",
+            "provisional": True, "ci_method": "night_jackknife_t", "model": "second_order_conv",
             "nights": {"weekday": sum(1 for t in tags.values() if t[1] == "weekday"),
                        "weekend": sum(1 for t in tags.values() if t[1] == "weekend"), "list": nights},
             "train_until": train_until}

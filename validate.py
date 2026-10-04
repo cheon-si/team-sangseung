@@ -122,6 +122,9 @@ def jackknife_conv(a_nights: dict, d_nights: dict, b: float) -> dict:
         return {"p": None, "ci_low": None, "ci_high": None, "ci_note": "no_data", "n_nights": len(a_nights)}
     C, ai, dj = conv_matrix(a_nights, d_nights, b)
     p = float(C.mean())
+    if len(ai) < MIN_NIGHTS_CI:
+        # 타고 온 열차 쪽 밤이 부족하면 D 쪽 밤이 많아도 구간이 A의 불확실성을 담지 못해 실제보다 좁다
+        return {"p": p, "ci_low": None, "ci_high": None, "ci_note": "insufficient_nights", "n_nights": len(ai)}
     nights = sorted(set(ai) | set(dj))
     loo = []
     for n in nights:

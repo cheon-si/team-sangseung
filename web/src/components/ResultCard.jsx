@@ -36,9 +36,11 @@ export default function ResultCard({ row }) {
         <Fact k="시간표상 여유" v={`${row.buffer_min > 0 ? "+" : ""}${row.buffer_min}분`} />
       </div>
       <p className="mt-3 text-sm text-slate-700">
-        시간표만 보면 <b>{row.p_timetable ? "갈아탈 수 있습니다" : "갈아탈 수 없습니다"}</b>. 실측 지연을 반영하면
-        성공 확률은 <b>{pct(row.p_success)}</b>입니다.
+        시간표만 보면 <b>{row.p_timetable ? "갈아탈 수 있습니다" : "갈아탈 수 없습니다"}</b>. 타고 온 열차의 도착
+        지연과 갈아탈 막차의 출발 지연을 모두 반영하면 성공 확률은 <b>{pct(row.p_success)}</b>입니다. 갈아탈 막차가
+        시간표대로 정시에 떠난다고만 가정하면 {pct(row.p_first)}입니다.
         {row.thin && " 이 노선·시간대는 밤마다 지연 차이가 커서 구간이 넓습니다."}
+        {row.dep_fallback && " 갈아탈 노선의 이 요일 출발 기록이 부족해 다른 요일 기록을 빌려 썼습니다."}
       </p>
     </div>
   );

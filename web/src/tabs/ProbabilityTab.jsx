@@ -49,8 +49,9 @@ export default function ProbabilityTab({ data, initialStation }) {
           <div className="rounded-xl border border-slate-200 bg-white p-4">
             <h3 className="font-semibold">{row.from_line}호선 도착 지연 분포</h3>
             <p className="text-sm text-slate-500 mb-2">
-              빨간 선이 시간표상 여유입니다. 선 왼쪽 초록 영역의 높이가 "열차가 이만큼 이하로 늦을 확률"이고,
-              그게 곧 성공 확률입니다.
+              빨간 선이 시간표상 여유입니다. 선과 곡선이 만나는 높이가 "갈아탈 막차가 정시에 떠난다면"의 성공
+              확률({Math.round((row.p_first ?? 0) * 100)}%)입니다. 실제 막차는 보통 조금 늦게 떠나므로, 위 카드의
+              확률은 그만큼 더 높게 계산됩니다.
               {ttTag !== "DAY" && " 지연 분포는 토요일과 일요일·공휴일을 묶은 주말 전체 기준입니다."}
             </p>
             <CdfChart dist={dist} gridSec={data.cdf.meta.grid_sec} bufferSec={row.buffer_sec} />
