@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { loadJson } from "./data";
 import * as engine from "./route";
+import { readPreset } from "./settings";
 
 // 경로 엔진(src/route/)과 화면을 잇는 곳. 화면은 엔진을 여기서만 쓴다.
 
@@ -15,6 +16,11 @@ const PLAN_CACHE_MAX = 60;
 // 기본 자료: 역·노드(network) + 지연 분포(route_dists) + 막차 조합표(prob_table, 선택).
 // 화면 0(집 등록)·역 검색·지도 핀은 이것만으로 그린다. 요일 시간표(trips_*)는 아래 useDayData 가 따로 읽는다.
 async function loadBase() {
+  // 첫 화면에 쓸 요일 시간표(시연 URL의 day, 없으면 오늘 운영일)를 기본 자료와 동시에 받기 시작한다.
+  // 예전에는 기본 자료를 다 받고 준비한 뒤에야 요청해, CPU를 4배 느리게 한 측정에서 첫 요약이 2.7초 걸렸다.
+  // loadJson 이 Promise 를 보관하므로 useDayData 가 같은 요청을 이어받는다(실패하면 거기서 다시 요청)
+  const tag = readPreset().tag ?? engine.serviceDayOf(new Date()).tag;
+  loadJson(`trips_${tag}`).catch(() => {});
   const [network, route_dists, prob_table] = await Promise.all([
     loadJson("network"),
     loadJson("route_dists"),

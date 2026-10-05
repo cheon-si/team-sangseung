@@ -6,6 +6,8 @@ import { iconSvg } from "./Icon";
 
 const SEOUL = { lat: 37.5665, lon: 126.978 };
 const SIDE_PAD = 70; // 화면 맞춤 좌우 여백(px). 핀·배지 라벨 폭의 절반보다 커야 가장자리에서 잘리지 않는다
+const TIGHT_PAD = 20; // 한 단계 더 확대해 볼 때의 좌우 여백. 이름표가 전부 화면 안에 들어올 때만 그 단계를 쓴다
+const EDGE = 6; // 이름표가 화면 가장자리에서 떨어져야 하는 최소 거리(px)
 const SINGLE_LEVEL = 6; // 점이 하나뿐일 때(집만 등록) 동네가 보이는 확대 수준. setBounds 는 골목(30m)까지 확대해 버린다
 
 // 화면 1·2의 지도(카카오맵). 구간별 노선 색 경로, 환승 배지(확률·판정 색), 출발·집·현위치를 그린다.
@@ -16,6 +18,7 @@ export default function RouteMap({ data, journey, originId, homeId, userPos, pad
   const drawnRef = useRef([]);
   const boundsRef = useRef(null); // { bounds, single } — single = 점이 하나뿐이면 그 좌표
   const fitKeyRef = useRef(null); // 마지막으로 화면을 맞춘 경로 범위
+  const labelsRef = useRef([]); // 화면 맞춤 때 잘리지 않아야 하는 이름표(출발·집 핀, 환승 배지): { pos, el, yAnchor }
   const clickRef = useRef(onTransferClick);
   const padRef = useRef({ padTop, padBottom });
   const [status, setStatus] = useState("loading");
@@ -52,7 +55,7 @@ export default function RouteMap({ data, journey, originId, homeId, userPos, pad
       const map = mapRef.current;
       if (!map) return;
       map.relayout();
-      fitView(map, boundsRef.current, padRef.current.padTop, padRef.current.padBottom);
+      fitView(map, boundsRef.current, padRef.current.padTop, padRef.current.padBottom, labelsRef.current, boxRef.current);
     });
     ro.observe(boxRef.current);
     return () => ro.disconnect();
@@ -72,8 +75,11 @@ export default function RouteMap({ data, journey, originId, homeId, userPos, pad
       bounds.extend(p);
       points.set(p.toString(), p);
     };
-    const addOverlay = (pos, content, zIndex, yAnchor = 1) =>
+    const labels = [];
+    const addOverlay = (pos, content, zIndex, yAnchor = 1, isLabel = false) => {
       drawn.push(new kakao.maps.CustomOverlay({ map, position: latlng(pos), content, zIndex, yAnchor, clickable: true }));
+      if (isLabel) labels.push({ pos: latlng(pos), el: content, yAnchor });
+    };
 
     // 1) 탑승 구간: 정차 좌표 순서대로, 흰 테두리 위에 노선 색 선을 겹쳐 지도 위에서도 또렷하게
     for (const leg of journey?.legs ?? []) {
@@ -90,18 +96,18 @@ export default function RouteMap({ data, journey, originId, homeId, userPos, pad
     // 2) 환승 지점 배지 (누르면 화면 3)
     (journey?.transfers ?? []).forEach((t, k) => {
       const at = nodeOf(data, t.to_node) ?? nodeOf(data, t.from_node);
-      if (at) addOverlay(at, transferBadge(t, () => clickRef.current?.(k)), 6);
+      if (at) addOverlay(at, transferBadge(t, () => clickRef.current?.(k)), 6, 1, true);
     });
 
     // 3) 출발역·집
     const origin = stationById(data, originId);
     const home = stationById(data, homeId);
     if (origin) {
-      addOverlay(origin, pin("pin", "출발", origin.name), 5);
+      addOverlay(origin, pin("pin", "출발", origin.name), 5, 1, true);
       extend(latlng(origin));
     }
     if (home && home.id !== origin?.id) {
-      addOverlay(home, pin("home", "집", home.name), 5);
+      addOverlay(home, pin("home", "집", home.name), 5, 1, true);
       extend(latlng(home));
     }
 
@@ -112,6 +118,7 @@ export default function RouteMap({ data, journey, originId, homeId, userPos, pad
     }
 
     drawnRef.current = drawn;
+    labelsRef.current = labels;
     boundsRef.current = bounds.isEmpty() ? null : { bounds, single: points.size === 1 ? [...points.values()][0] : null };
     // 화면 맞춤은 경로 범위가 바뀔 때만: 실시간 모드는 1분마다 계획을 다시 계산하는데,
     // 같은 경로인데도 다시 맞추면 사용자가 옮겨 둔 지도가 매분 되돌아간다
@@ -127,7 +134,7 @@ export default function RouteMap({ data, journey, originId, homeId, userPos, pad
     if (status !== "ready" || !boundsRef.current) return;
     const map = mapRef.current;
     map.relayout();
-    fitView(map, boundsRef.current, padTop, padBottom);
+    fitView(map, boundsRef.current, padTop, padBottom, labelsRef.current, boxRef.current);
   }, [status, drawCount, padTop, padBottom]);
 
   return (
@@ -159,15 +166,41 @@ export default function RouteMap({ data, journey, originId, homeId, userPos, pad
   );
 }
 
-// 경로 전체가 보이게 맞춘다. 점이 하나뿐이면(집만 등록) 그 점을 가운데 두고 동네 수준으로
-function fitView(map, fit, padTop, padBottom) {
+// 경로 전체가 보이게 맞춘다. 점이 하나뿐이면(집만 등록) 그 점을 가운데 두고 동네 수준으로.
+// 카카오맵 확대 단계는 2배씩이라 넉넉한 좌우 여백(SIDE_PAD)으로 맞추면 경로가 화면의 절반 남짓만 차는 경우가 있다
+// (375px 폭에서 마포→잠실 14km가 8km 축척으로 열림). 그래서 좁은 여백으로 한 단계 더 확대해 보고,
+// 출발·집 핀과 환승 배지 이름표가 모두 화면(위 칩·아래 시트 제외) 안에 들어오면 그 단계를 쓴다.
+function fitView(map, fit, padTop, padBottom, labels = [], box = null) {
   if (!fit) return;
   if (fit.single) {
     map.setLevel(SINGLE_LEVEL);
     map.setCenter(fit.single);
-  } else {
+    return;
+  }
+  map.setBounds(fit.bounds, padTop, SIDE_PAD, padBottom, SIDE_PAD);
+  if (!box) return;
+  const loose = map.getLevel();
+  map.setBounds(fit.bounds, padTop, TIGHT_PAD, padBottom, TIGHT_PAD);
+  if (map.getLevel() < loose && !labelsFit(map, labels, box, padTop, padBottom)) {
     map.setBounds(fit.bounds, padTop, SIDE_PAD, padBottom, SIDE_PAD);
   }
+}
+
+// 이름표가 모두 보이는 영역 안에 있는가. 이름표는 좌표 위 가운데(xAnchor 0.5)에 yAnchor 비율만큼 올라가 그려진다.
+// 위쪽은 상단 칩 줄(padTop)에 살짝 걸치는 것까지(절반), 아래쪽은 시트 윗선까지 허용한다.
+function labelsFit(map, labels, box, padTop, padBottom) {
+  const proj = map.getProjection();
+  const W = box.clientWidth;
+  const H = box.clientHeight;
+  return labels.every(({ pos, el, yAnchor }) => {
+    const p = proj.containerPointFromCoords(pos);
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    if (!w || !h) return false; // 아직 그려지지 않은 이름표는 크기를 모르니 넉넉한 여백을 쓴다
+    const left = p.x - w / 2;
+    const top = p.y - h * yAnchor;
+    return left >= EDGE && left + w <= W - EDGE && top >= padTop / 2 && top + h <= H - padBottom + EDGE;
+  });
 }
 
 // ── 지도 오버레이 DOM (React 밖). 역 이름은 textContent 로 넣는다. ──
