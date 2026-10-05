@@ -7,12 +7,14 @@
        ③ 항목별 일치율·|Δ| 분포·불일치 사례 출력. 상세는 output/route_check/report.json
 판정 기준(하나라도 어기면 종료 코드 1):
   [0] 데이터: 시각이 거꾸로 가거나 직선거리 평균 속도가 30m/s를 넘는 연결 0개
-  [1] 환승 확률: 엔진 = Python(|Δ| ≤ 1e-6), 엔진 vs prob_table p_success |Δ| ≤ 0.02(fallback 행은 따로 보고)
+  [1] 환승 확률(B 모형, export_model_b.py): 엔진 = Python(|Δ| ≤ 1e-9), 엔진 vs prob_table p_b |Δ| ≤ 1e-4(소수 4자리 반올림).
+      B 채택 전 모형 p_success 와의 차이는 참고로만 출력
   [2] CSA: 가장 이른 도착, 출발 마감(leave_by.last), options 첫 열차 고정 도착 100% 일치
       (탑승 수·안전 출발 마감 leave_by.safe 차이는 동률 여정 선택 차이라 참고로만 출력)
-  [3] 경로 확률: 엔진이 고른 여정에서 엔진 p_home = Python 재귀 값(|Δ| ≤ 1e-6)
+  [3] 경로 확률: 엔진이 고른 여정에서 엔진 p_home = Python 재귀 값(|Δ| ≤ 1e-9)
   [4] 막차 조합(prob_table 여유 ≥ 0)으로 실제 경로가 있음
   [5] 실제 경로 몇 개를 시간표 CSV 원문과 대조(출력만), [6] planTrip 실행 시간(출력만)
+  [7] B 확률표(B/막차환승_성공확률표_v3.1.csv, 평일)와 같은 연결의 엔진 p 대조, 보고서 11.1 필요 여유 재현(출력만)
 """
 import argparse
 import bisect
@@ -24,8 +26,10 @@ import time
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 import common as c
+import export_model_b as mb
 from build_station_alt import haversine_m
 
 BASE = Path(__file__).resolve().parent
@@ -35,8 +39,10 @@ OUT_DIR = c.OUTPUT_DIR / "route_check"
 TAGS = ("DAY", "SAT", "END")
 MAX_DEPTH = 2            # 놓친 뒤 재탐색 깊이(계약 2장). 깊이 2 여정의 q는 0
 MAX_SPEED = 30           # 연결 평균 속도(직선거리/시간) 상한 m/s. 정상 연결은 최대 26.5(1호선 급행), 넘으면 가짜 연결
-TOL_TABLE = 0.02         # prob_table 대조 허용 오차(round_sec 반올림만큼)
-TOL_SAME = 1e-6          # 같은 입력이면 엔진과 Python이 같아야 함
+TOL_TABLE = 1e-4         # prob_table p_b 대조 허용 오차(소수 4자리 반올림만큼)
+TOL_SAME = 1e-9          # 같은 입력이면 엔진과 Python이 같아야 함
+TOL_PRE = 0.02           # B 채택 전 모형 p_success 대조 허용 오차(round_sec 반올림만큼)
+B_TABLE = mb.B_DIR / "막차환승_성공확률표_v3.1.csv"
 INF = 10 ** 9
 SANITY = [("강남", "천호"), ("홍대입구", "노원"), ("서울역", "잠실"), ("사당", "수유")]
 
@@ -57,15 +63,21 @@ def load_json(name: str) -> dict:
 
 def load_network() -> dict:
     """walk[n] = {m: 도보 초}: 노드 n에서 내린 뒤 노드 m의 열차를 탈 때까지 걸리는 시간.
-    자기 자신(n→n)은 같은 노드의 다른 열차(0초, same_line 자기 환승 행이 있으면 그 값). 같은 (from, to)가 여럿이면 최소."""
+    자기 자신(n→n)은 같은 노드의 다른 열차(0초, same_line 자기 환승 행이 있으면 그 값). 같은 (from, to)가 여럿이면 최소.
+    dist[n][m] = 그 최소 도보 행의 환승거리(동률이면 먼저 나온 행, 없으면 None). 자기 자신은 자기 환승 행이 없으면 0.
+    B 모형 걸음 시간 W = 거리 ÷ 1.2."""
     net = load_json("network")
     walk = {i: {} for i in range(len(net["nodes"]))}
+    dist = {i: {} for i in range(len(net["nodes"]))}
     for t in net["transfers"]:
         w = walk[t["from"]]
-        w[t["to"]] = min(w.get(t["to"], INF), t["walk_sec"])
+        if t["walk_sec"] < w.get(t["to"], INF):
+            w[t["to"]] = t["walk_sec"]
+            dist[t["from"]][t["to"]] = t.get("distance_m")
     for i, w in walk.items():
-        w.setdefault(i, 0)
-    return {"nodes": net["nodes"], "walk": walk,
+        if i not in w:
+            w[i], dist[i][i] = 0, 0
+    return {"nodes": net["nodes"], "walk": walk, "dist": dist,
             "station_nodes": {s["id"]: s["nodes"] for s in net["stations"]}}
 
 
@@ -202,7 +214,14 @@ def pick_d(dists: dict, line: str, day_type: str, flags: int):
     return f"{table}:{line}|{day_type}", dists[(table, f"{line}|{day_type}")]
 
 
+def transfer_b(ctx: dict, tag: str, ta: dict, a_stop, td: dict, d_stop, walk_w: float) -> dict:
+    """B 모형 환승 확률(export_model_b.transfer_b). 정차의 시각·열차코드·시발 시각으로 계산한다."""
+    return mb.transfer_b(ctx["model"], ta["line"], ta["code"], ta.get("start"), stop_time(a_stop, "arr"),
+                         td["line"], td["code"], stop_time(d_stop, "dep"), walk_w, tag != "DAY")
+
+
 def transfer_p(a_dist, d_dist, b: float) -> float:
+    """B 채택 전 모형(2차 합성곱). 참고 비교용으로만 남긴다."""
     """p = Σ_δ w_δ · F_A(B + δ), F_A(x) = Σ_{a ≤ x} w_a — 가중 표본으로 정확히 합한다."""
     a_val, _, a_cum = a_dist
     d_val, d_w, _ = d_dist
@@ -231,9 +250,8 @@ def journey_transfers(ctx: dict, tag: str, rides: list) -> list:
             tr.update(buffer_sec=None, p=None)
         else:
             b = dep_d - arr_a - w
-            ak, ad = pick_a(dists, ta["line"], day_type_of(tag), a[3], arr_a)
-            dk, dd = pick_d(dists, td["line"], day_type_of(tag), d[3])
-            tr.update(buffer_sec=b, a_dist_key=ak, d_dist_key=dk, p=transfer_p(ad, dd, b))
+            bm = transfer_b(ctx, tag, ta, a, td, d, mb.walk_of(net["dist"][a[0]].get(d[0]), w))
+            tr.update(buffer_sec=b, p=bm["p"], s90=bm["s90"], slack=bm["slack"])
         out.append(tr)
     return out
 
@@ -324,6 +342,7 @@ def table_queries(ctx: dict) -> tuple[list, list]:
         if d is None:
             q["dropped"] += dropped_train(ctx, tag, r["to_line"], r["out_dir"], r["to_station"], "dep", r["depart_sec"])
         tq.append(q)
+        q["W"] = mb.walk_of(r["distance_m"], r["walk_sec"])
         if a is None or d is None or r["buffer_sec"] < 0 or a[1] == 0:
             continue
         trips, nodes = ctx["tt"][tag]["trips"], ctx["net"]["nodes"]
@@ -344,7 +363,8 @@ def run_engine(ctx: dict, tq: list, plans: list) -> dict:
 
     payload = {
         "transfers": [None if q["a"] is None or q["d"] is None else
-                      {"tag": q["tag"], "B": q["B"], "a": stop_ref(q["tag"], q["a"]), "d": stop_ref(q["tag"], q["d"])}
+                      {"tag": q["tag"], "W": q["W"], "B": q.get("B"),
+                       "a": stop_ref(q["tag"], q["a"]), "d": stop_ref(q["tag"], q["d"])}
                       for q in tq],
         "plans": [{k: q[k] for k in ("id", "tag", "origin", "home", "nowSec")} for q in plans],
     }
@@ -380,8 +400,34 @@ def check_data(ctx: dict, fails: list) -> None:
 
 
 def check_table(ctx: dict, tq: list, eng: list, fails: list, report: dict) -> None:
-    """prob_table 행: 엔진 vs Python(같아야 함), 엔진 vs p_success(≤ 0.02). 0.02 초과 행은 원인을 붙인다."""
-    print("\n[1] 환승 확률 vs prob_table p_success")
+    """prob_table 행: B 확률 엔진 vs Python(같아야 함), 엔진 vs p_b(반올림 오차만). B 채택 전 p_success 와의 차이는 참고."""
+    print("\n[1] 환승 확률(B 모형) vs Python · prob_table p_b")
+    res_b = []
+    for q, e in zip(tq, eng):
+        if q["a"] is None or q["d"] is None:
+            continue
+        tt = ctx["tt"][q["tag"]]
+        ta, td = tt["trips"][q["a"][0]], tt["trips"][q["d"][0]]
+        bm = transfer_b(ctx, q["tag"], ta, ta["stops"][q["a"][1]], td, td["stops"][q["d"][1]], q["W"])
+        r = q["row"]
+        res_b.append({"combo": f"{q['tag']} {r['combo_id']}", "p_engine": e["p"], "p_python": bm["p"],
+                      "s90_engine": e["s90"], "s90_python": bm["s90"], "p_b": r["p_b"], "s90_sec": r["s90_sec"],
+                      "p_success": r["p_success"]})
+    d_same = [max(abs(x["p_engine"] - x["p_python"]), abs(x["s90_engine"] - x["s90_python"])) for x in res_b]
+    d_tab = [abs(x["p_engine"] - x["p_b"]) for x in res_b]
+    d_s90 = [abs(x["s90_engine"] - x["s90_sec"]) for x in res_b]
+    d_old = [x["p_engine"] - x["p_success"] for x in res_b]
+    print(f"  {len(res_b)}행: 엔진 vs Python 최대 |Δp|·|ΔS90| {max(d_same):.2e} · 엔진 vs prob_table p_b 최대 {max(d_tab):.2e}"
+          f" · S90 vs s90_sec 최대 {max(d_s90):.2f}초")
+    print(f"  참고: B − B 채택 전(p_success) 중앙 {pct(d_old, .5):+.4f}, 5%~95% {pct(d_old, .05):+.3f}~{pct(d_old, .95):+.3f},"
+          f" |차| > 0.1 {sum(abs(v) > 0.1 for v in d_old)}행")
+    if max(d_same) > TOL_SAME:
+        fails.append("환승 확률(B): 엔진 ≠ Python")
+    if max(d_tab) > TOL_TABLE or max(d_s90) > 0.05 + 1e-9:
+        fails.append("환승 확률(B): 엔진 ≠ prob_table p_b")
+    report["table_b"] = res_b
+
+    # 아래는 B 채택 전 모형(남겨 둔 2차 합성곱)끼리의 대조. 엔진 transferQuery 의 p_pre 와 Python 이 같은지만 본다
     res = []
     for q, e in zip(tq, eng):
         r = q["row"]
@@ -401,7 +447,7 @@ def check_table(ctx: dict, tq: list, eng: list, fails: list, report: dict) -> No
         p_rule = transfer_p(t_ad, ctx["dists"][("dep_last3", f"{td['line']}|{dt}")], q["B"])
         fb = bool(r["dep_fallback"] or r["arr_fallback"] or "first_order_fallback" in (r["ci_note"] or ""))
         res.append({"combo": f"{q['tag']} {r['combo_id']}", "fallback": fb, "B": q["B"], "p_success": r["p_success"],
-                    "p_engine": e["p"], "p_python": p_py, "p_table_rule": p_rule,
+                    "p_engine": e["p_pre"], "p_python": p_py, "p_table_rule": p_rule,
                     "a_key": ak, "a_key_engine": e["a_dist_key"], "a_key_table": tk,
                     "d_key": dk, "d_key_engine": e["d_dist_key"]})
     ok = [x for x in res if "error" not in x]
@@ -409,17 +455,17 @@ def check_table(ctx: dict, tq: list, eng: list, fails: list, report: dict) -> No
     missing = len(res) - len(ok) - len(dropped)
     d_ep = [abs(x["p_engine"] - x["p_python"]) for x in ok]
     key_diff = [x for x in ok if x["a_key"] != x["a_key_engine"] or x["d_key"] != x["d_key_engine"]]
-    print(f"  행 {len(res)}: 비교 {len(ok)}, 시각이 깨져 데이터에서 뺀 열차를 A·D로 쓰는 행 {len(dropped)}"
+    print(f"  [B 채택 전 모형] 행 {len(res)}: 비교 {len(ok)}, 시각이 깨져 데이터에서 뺀 열차를 A·D로 쓰는 행 {len(dropped)}"
           f" {sorted({t for x in dropped for t in x['dropped']})}(비교 제외), 그 밖에 못 찾음 {missing}")
-    print(f"  엔진 vs Python 최대 |Δ| {max(d_ep):.2e}, 분포 키 불일치 {len(key_diff)}")
-    if missing or max(d_ep) > TOL_SAME or key_diff:
-        fails.append("환승 확률: 엔진 ≠ Python")
-    for name, sub in (("주 비교(fallback 아님)", [x for x in ok if not x["fallback"]]),
-                      ("fallback 행", [x for x in ok if x["fallback"]])):
+    print(f"  [B 채택 전 모형] 엔진 vs Python 최대 |Δ| {max(d_ep):.2e}, 분포 키 불일치 {len(key_diff)}")
+    if missing or max(d_ep) > 1e-6 or key_diff:
+        fails.append("B 채택 전 모형: 엔진 ≠ Python")
+    for name, sub in (("[B 채택 전 모형] 주 비교(fallback 아님)", [x for x in ok if not x["fallback"]]),
+                      ("[B 채택 전 모형] fallback 행", [x for x in ok if x["fallback"]])):
         d = [abs(x["p_engine"] - x["p_success"]) for x in sub]
-        over = [x for x in sub if abs(x["p_engine"] - x["p_success"]) > TOL_TABLE]
+        over = [x for x in sub if abs(x["p_engine"] - x["p_success"]) > TOL_PRE]
         print(f"  {name} {len(sub)}행: |엔진−p_success| 중앙 {pct(d, .5):.4f} · 95% {pct(d, .95):.4f} · 최대 {max(d):.4f}"
-              f" · >{TOL_TABLE} {len(over)}행")
+              f" · >{TOL_PRE} {len(over)}행")
         for tag in TAGS:
             dt = [abs(x["p_engine"] - x["p_success"]) for x in sub if x["combo"].startswith(tag)]
             if dt:
@@ -432,8 +478,8 @@ def check_table(ctx: dict, tq: list, eng: list, fails: list, report: dict) -> No
                 why.append(f"D 분포 {x['d_key']} (표 dep_last3)")
             print(f"    {x['combo']} B={x['B']} 엔진 {x['p_engine']:.4f} 표 {x['p_success']:.4f}"
                   f" 표 규칙 재계산 {x['p_table_rule']:.4f} ← {', '.join(why) or '원인 미상'}")
-        if name.startswith("주") and over:
-            fails.append(f"prob_table |Δ|>{TOL_TABLE} {len(over)}행")
+        if "주 비교" in name and over:
+            fails.append(f"B 채택 전 모형 prob_table |Δ|>{TOL_PRE} {len(over)}행")
     d_rule = [abs(x["p_table_rule"] - x["p_success"]) for x in ok]
     print(f"  참고: prob_table 선택 규칙으로 Python 재계산 시 |Δ| 최대 {max(d_rule):.4f}(반올림 오차만 남는지 확인)")
     report["table"] = res
@@ -638,6 +684,118 @@ def check_sanity(ctx: dict, sq: list, eng: dict, report: dict) -> None:
     report["sanity"] = {q["id"]: eng[q["id"]] for q in sq}
 
 
+# ── 7) B 확률표 대조 · 보고서 11장 재현 ───────────────────────────────
+
+REPORT_S90 = {"4호선": 27, "1호선": 34, "2호선": 50, "3호선": 63, "5호선": 65, "7호선": 74, "6호선": 104, "9호선": 125, "8호선": 130}
+REPORT_S80 = {"4호선": -20, "1호선": -13, "2호선": 4, "3호선": 17, "5호선": 18, "7호선": 27, "6호선": 57, "9호선": 79, "8호선": 84}
+
+
+def hms_sec(text: str) -> int:
+    """'HH:MM:SS' → 운영일 초(03시 전은 자정 넘김)."""
+    h, m, s = (int(x) for x in text.split(":"))
+    return (h + 24 if h < 3 else h) * 3600 + m * 60 + s
+
+
+def find_code_stop(ctx, tag, line, station, code, kind, t):
+    """노선·역 이름·열차번호(숫자부)·시각으로 정차 하나를 찾는다. 도착(kind='arr')이 없는 정차는 출발 시각으로도 본다
+    (B 시간표 정리: 도착 = arr.fillna(dep))."""
+    tt = ctx["tt"][tag]
+    for n, node in enumerate(ctx["net"]["nodes"]):
+        if node["line"] != line or station not in (node["nm"], node["station"]):
+            continue
+        for k in ((kind, "dep") if kind == "arr" else (kind,)):
+            for ti, i in ctx["sidx"][tag].get((n, k, t), []):
+                tr = tt["trips"][ti]
+                if k == "dep" and kind == "arr" and tr["stops"][i][1] is not None:
+                    continue
+                if "".join(ch for ch in tr["code"] if ch.isdigit()).lstrip("0") == code.lstrip("0"):
+                    return ti, i
+    return None
+
+
+def b_table_queries(ctx: dict) -> list:
+    """B 확률표 평일 행 → (A 정차, D 정차, W) 질의. 역 이름 'A/B'는 도착노선 역명/환승노선 역명."""
+    if not B_TABLE.exists():
+        print(f"  B 확률표 없음({B_TABLE}) — [7] 건너뜀")
+        return []
+    rows = pd.read_csv(B_TABLE, encoding="utf-8-sig", dtype=str)
+    out = []
+    for r in rows[rows["요일"] == "평일"].to_dict("records"):
+        names = r["환승역"].split("/")
+        a = find_code_stop(ctx, "DAY", r["도착노선"][0], names[0], r["도착열차"], "arr", hms_sec(r["도착_예정시각"]))
+        d = find_code_stop(ctx, "DAY", r["환승노선"][0], names[-1], r["막차"], "dep", hms_sec(r["막차_예정출발"]))
+        q = {"row": r, "tag": "DAY", "a": None, "d": None, "W": None, "why": None}
+        if a is None or d is None:
+            q["why"] = "A 정차 없음" if a is None else "D 정차 없음"
+        else:
+            tt, net = ctx["tt"]["DAY"], ctx["net"]
+            an, dn = tt["trips"][a[0]]["stops"][a[1]][0], tt["trips"][d[0]]["stops"][d[1]][0]
+            w = net["walk"][an].get(dn)
+            if w is None:
+                q["why"] = "환승 자료 없음"
+            else:
+                q.update(a=a, d=d, W=mb.walk_of(net["dist"][an].get(dn), w))
+        out.append(q)
+    return out
+
+
+def check_b_table(ctx: dict, bq: list, eng_b: list, report: dict) -> None:
+    """B 확률표(평일)와 같은 연결의 엔진 p 대조, 차이 원인(W·S·ŷ), 보고서 11.1 필요 여유·11.2 마지막 연결 재현."""
+    if not bq:
+        return
+    print(f"\n[7] B 확률표 대조 — {B_TABLE.name} 평일 {len(bq)}행")
+    model, tt = ctx["model"], ctx["tt"]["DAY"]
+    found = [q for q in bq if q["a"] is not None]
+    miss = pd.Series([q["why"] for q in bq if q["a"] is None]).value_counts().to_dict()
+    res = []
+    for q, e in zip(found, eng_b):
+        r = q["row"]
+        ta, td = tt["trips"][q["a"][0]], tt["trips"][q["d"][0]]
+        bm = transfer_b(ctx, "DAY", ta, ta["stops"][q["a"][1]], td, td["stops"][q["d"][1]], q["W"])
+        res.append({"st": r["환승역"], "F": r["도착노선"], "L": r["환승노선"], "a": r["도착열차"], "k": r["막차"],
+                    "p_B": float(r["성공확률"]), "p_eng": e["p"], "p_py": bm["p"],
+                    "W_B": float(r["도보시간_초"]), "W": q["W"], "S_B": float(r["시간표여유_초"]), "S": e["slack"],
+                    "y_B": float(r["예측_지연차이_초"]), "y": e["yhat"]})
+    df = pd.DataFrame(res)
+    df["dp"] = df.p_eng - df.p_B
+    print(f"  매칭 {len(df)}/{len(bq)}행 (못 찾음 {miss}), 엔진 vs Python 최대 |Δ| {(df.p_eng - df.p_py).abs().max():.2e}")
+    print(f"  |엔진 p − B 확률| 중앙 {df.dp.abs().median():.4f} · 95% {df.dp.abs().quantile(.95):.4f} · 최대 {df.dp.abs().max():.4f}"
+          f" · > 0.0005(표 반올림) {int((df.dp.abs() > 0.0005 + 1e-9).sum())}행 · > 0.01 {int((df.dp.abs() > 0.01).sum())}행")
+    dw, ds, dy = (df.W - df.W_B).abs() > 0.05, (df.S - df.S_B).abs() > 0.05, (df.y - df.y_B).abs() > 0.5 + 1e-9
+    big = df.dp.abs() > 0.0005 + 1e-9
+    print(f"  원인: W 다름 {int(dw.sum())}행, S 다름 {int(ds.sum())}행, ŷ 차 > 0.5초 {int(dy.sum())}행;"
+          f" 확률 차 행 중 W·S·ŷ 모두 같음 {int((big & ~dw & ~ds & ~dy).sum())}행")
+    if dy.any():
+        g = df[dy].assign(d=lambda x: x.y - x.y_B).groupby(["F", "L"])["d"].agg(["size", "median"]).round(1)
+        print("  ŷ 차(엔진 − B) 조합별: " + ", ".join(f"{f}→{l} {int(n)}행 {m:+.1f}초" for (f, l), (n, m) in g.iterrows()))
+    for x in df[big].sort_values("dp", key=abs, ascending=False).head(8).itertuples():
+        print(f"    {x.st} {x.F}→{x.L} {x.a}→{x.k}: 엔진 {x.p_eng:.3f} B {x.p_B:.3f} | W {x.W:.1f}/{x.W_B:.1f}"
+              f" S {x.S:.1f}/{x.S_B:.1f} ŷ {x.y:.1f}/{x.y_B:.1f}")
+
+    # 11.1 90%·80%에 필요한 시간표 여유(평일, 환승노선별 중앙값). 보고서는 np.percentile(잔차, 10·20)(선형 보간)으로 계산
+    rows = pd.read_csv(B_TABLE, encoding="utf-8-sig", dtype=str)
+    w = rows[rows["요일"] == "평일"].copy()
+    w["y"] = w["예측_지연차이_초"].astype(float)
+    r = np.asarray(model["resid"])
+    r10, r20 = np.percentile(r, [10, 20])
+    w["S90_pct"], w["S80_pct"] = -r10 - w.y, -r20 - w.y
+    w["S90_emp"] = [mb.required_slack(model["resid"], y, 0.9) for y in w.y]
+    w["S80_emp"] = [mb.required_slack(model["resid"], y, 0.8) for y in w.y]
+    med = w.groupby("환승노선")[["S90_pct", "S80_pct", "S90_emp", "S80_emp"]].median()
+    print("  11.1 필요 여유(초, 평일 환승노선별 중앙값) — 보고서 / 재현(np.percentile) / 앱 정의(경험분포 정확히):")
+    for L in sorted(med.index, key=lambda l: med.at[l, "S90_pct"]):
+        m = med.loc[L]
+        print(f"    {L:<6} 90%: {REPORT_S90.get(L, '-'):>4} / {m.S90_pct:6.1f} / {m.S90_emp:6.1f}   "
+              f"80%: {REPORT_S80.get(L, '-'):>4} / {m.S80_pct:6.1f} / {m.S80_emp:6.1f}")
+    # 11.2 평일 마지막 연결: 실질 막차마다 시간표 여유 ≥ 0 인 마지막 도착 열차
+    w["S"], w["P"] = w["시간표여유_초"].astype(float), w["성공확률"].astype(float)
+    keys = ["환승역", "도착노선", "도착방향", "환승노선", "막차방향", "막차", "막차행선", "막차_예정출발"]
+    last = w[w.S >= 0].sort_values("도착_예정시각", key=lambda s: s.map(hms_sec)).groupby(keys).tail(1)
+    print(f"  11.2 평일 마지막 연결 {len(last)}개 중 90% 미만 {int((last.P < .9).sum())}개 ({(last.P < .9).mean():.1%}),"
+          f" 50% 미만 {int((last.P < .5).sum())}개 (보고서 1,299개 중 166개 12.8%, 50% 미만 2개)")
+    report["b_table"] = res
+
+
 def check_timing(eng: dict) -> None:
     ms = [e["ms"] for e in eng.values()]
     print(f"\n[6] planTrip 실행 시간(Node, {len(ms)}회): 중앙 {pct(ms, .5):.1f}ms · p90 {pct(ms, .9):.1f}"
@@ -652,15 +810,18 @@ def main() -> None:
     args = ap.parse_args()
 
     t0 = time.time()
-    ctx = {"net": load_network(), "dists": load_dists(), "memo": {}}
+    ctx = {"net": load_network(), "dists": load_dists(), "model": load_json("model_b"), "memo": {}}
     ctx["tt"] = {tag: load_timetable(tag) for tag in TAGS}
     ctx["sidx"] = {tag: stop_index(ctx["tt"][tag]) for tag in TAGS}
     plans = make_plan_queries(ctx, args.pairs, args.seed)
     tq, lq = table_queries(ctx)
+    bq = b_table_queries(ctx)        # B 확률표 연결(엔진 p 를 같이 받아 [7]에서 대조)
     sq = [{"id": f"san{k}", "kind": "sanity", "tag": tag, "origin": o, "home": h, "nowSec": t}
           for k, (tag, (o, h), t) in enumerate((tag, p, t) for tag in ("DAY", "SAT") for p in SANITY
                                                for t in (82800, 85200))]
-    out = run_engine(ctx, tq, plans + lq + sq)
+    out = run_engine(ctx, tq + [q for q in bq if q["a"] is not None], plans + lq + sq)
+    eng_b = out["transfers"][len(tq):]
+    out["transfers"] = out["transfers"][:len(tq)]
     eng = {r["id"]: r for r in out["plans"]}
     print(f"엔진 실행 끝: 환승 질의 {len(tq)}, planTrip {len(eng)} ({time.time() - t0:.0f}초)")
 
@@ -672,6 +833,7 @@ def main() -> None:
     check_last_combos(lq, eng, ctx, fails, report)
     check_sanity(ctx, sq, eng, report)
     check_timing(eng)
+    check_b_table(ctx, bq, eng_b, report)
 
     (OUT_DIR / "report.json").write_text(json.dumps(report, ensure_ascii=False, default=str), encoding="utf-8")
     print(f"\n상세: {OUT_DIR / 'report.json'} | 총 {time.time() - t0:.0f}초")

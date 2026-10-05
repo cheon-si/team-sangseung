@@ -13,7 +13,7 @@ const SLOW_PLAN_MS = 100; // planTrip 한 번이 이보다 오래 걸리면 콘�
 const PLAN_CACHE_MAX = 60;
 
 // ── 데이터 읽기 ──
-// 기본 자료: 역·노드(network) + 지연 분포(route_dists) + 막차 조합표(prob_table, 선택).
+// 기본 자료: 역·노드(network) + B 모형(model_b) + 지연 분포(route_dists, B 채택 전 모형·참고 그래프) + 막차 조합표(prob_table, 선택).
 // 화면 0(집 등록)·역 검색·지도 핀은 이것만으로 그린다. 요일 시간표(trips_*)는 아래 useDayData 가 따로 읽는다.
 async function loadBase() {
   // 첫 화면에 쓸 요일 시간표(시연 URL의 day, 없으면 오늘 운영일)를 기본 자료와 동시에 받기 시작한다.
@@ -21,13 +21,14 @@ async function loadBase() {
   // loadJson 이 Promise 를 보관하므로 useDayData 가 같은 요청을 이어받는다(실패하면 거기서 다시 요청)
   const tag = readPreset().tag ?? engine.serviceDayOf(new Date()).tag;
   loadJson(`trips_${tag}`).catch(() => {});
-  const [network, route_dists, prob_table] = await Promise.all([
+  const [network, route_dists, model_b, prob_table] = await Promise.all([
     loadJson("network"),
     loadJson("route_dists"),
-    // 환승 상세의 95% 구간 표시용. 못 읽어도 경로·확률 계산은 된다
+    loadJson("model_b"), // 환승 확률(B 모형). 없으면 확률을 낼 수 없으니 필수
+    // 막차 조합 행 대조용. 못 읽어도 경로·확률 계산은 된다
     loadJson("prob_table").catch(() => null),
   ]);
-  return { network, route_dists, prob_table };
+  return { network, route_dists, model_b, prob_table };
 }
 
 export function useRouteData() {

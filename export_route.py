@@ -2,6 +2,7 @@
 
     network.json               노드(노선, 시간표 역명)·물리 역·환승 도보. 다른 파일은 노드를 배열 인덱스로 참조
     trips_{DAY,SAT,END}.json   21:00 이후 열차 정차 [노드 인덱스, 도착 초, 출발 초, 막차 플래그]
+                               + start(그 열차 시발역 출발 초, 21:00 창으로 자르기 전 전체 시간표 기준. B 모형 경과운행시간용)
     route_dists.json           확률 계산용 지연 분포(밤 균등 가중 표본).
                                export_for_app.build가 쓰는 by_cell_d·last_a·deps 객체를 그대로 받아 만든다
 
@@ -115,8 +116,11 @@ def build_network(meta: dict) -> tuple[dict, dict, list[str]]:
         errs.append(f"같은 이름의 다른 물리 역(300m 초과): {dup[dup > 1].index.tolist()}")
 
     node_idx = {(l, n): i for i, (l, n) in enumerate(zip(nodes["line"], nodes["nm"]))}
+    # distance_m: 환승거리(m). B 모형의 걸음 시간 W = 거리 ÷ 1.2m/s (없으면 null → 앱은 walk_sec 사용)
     transfers = [{"from": node_idx[(r.from_line, r.station)], "to": node_idx[(r.to_line, r.to_station)],
-                  "walk_sec": int(r.walk_sec), "src": r.walk_src, "same_line": bool(r.same_line)}
+                  "walk_sec": int(r.walk_sec),
+                  "distance_m": None if pd.isna(r.distance_m) else round(float(r.distance_m), 1),
+                  "src": r.walk_src, "same_line": bool(r.same_line)}
                  for r in tr.itertuples()]
     net = {"meta": {**meta, "source": f"{c.TIMETABLE_CSV.name} 역사코드 → station_coords.json, "
                                       f"{c.TRANSFER_CSV.name}(common.load_transfers)",
@@ -210,11 +214,20 @@ def check_jumps(trips: list, tt: pd.DataFrame, node_key: list) -> tuple[list, di
     return kept, {"filled_skipped_stop": filled, "jump_warnings": warned}
 
 
+def trip_starts(tt: pd.DataFrame) -> dict:
+    """(노선, 열차코드) → 시발역 출발 초. 통과 행을 뺀 전체 시간표(21:00 창으로 자르기 전)의 첫 정차 출발, 없으면 도착.
+    B 모형 el10 = (환승역 예정도착 − 시발 출발) / 600. 공통테이블 값과 대조함: 평일 1호선 504 서울역 → 77.5분."""
+    first = tt[~tt["pass_through"]].groupby(["line", "열차코드"], sort=False).head(1)
+    t = first["dep_sec"].fillna(first["arr_sec"])
+    return {(l, k): sec_or_none(v) for l, k, v in zip(first["line"], first["열차코드"], t)}
+
+
 def build_trips(tag: str, node_idx: dict, meta: dict) -> dict:
     """한 요일 태그의 열차별 정차 목록. 막차 플래그는 21:00 창이 아니라 그날 시간표 전체에서 정한다
     (validate.load_dep_delays와 같은 규칙. 둘 다 preprocess.excluded_trains로 뺀 시간표를 쓴다)."""
     tt = load_timetable(tag)
     arr3, dep3, dep1 = last_uids(tt, "arr_sec", LAST_K), last_uids(tt, "dep_sec", LAST_K), last_uids(tt, "dep_sec", 1)
+    starts = trip_starts(tt)
     s = tt[~tt["pass_through"]]
     s = s[(s["arr_sec"] >= WINDOW_START) | (s["dep_sec"] >= WINDOW_START)]
     flags = (s["uid"].isin(arr3) * FLAG_ARR_LAST3 + s["uid"].isin(dep3) * FLAG_DEP_LAST3
@@ -225,7 +238,7 @@ def build_trips(tag: str, node_idx: dict, meta: dict) -> dict:
         stops = [[node_idx[(line, n)], sec_or_none(a), sec_or_none(d), int(f)]
                  for n, a, d, f in zip(g["nm"], g["arr_sec"], g["dep_sec"], g["flags"])]
         trips.append({"line": line, "code": code, "dir": g["방향"].iat[0], "express": g["급행여부"].iat[0] == "1",
-                      "dest": g["도착역"].iat[0], "stops": stops})
+                      "dest": g["도착역"].iat[0], "start": starts.get((line, code)), "stops": stops})
     node_key = [None] * len(node_idx)          # 노드 인덱스 → (노선, 역명)
     for key, i in node_idx.items():
         node_key[i] = key

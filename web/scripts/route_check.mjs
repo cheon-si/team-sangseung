@@ -1,13 +1,14 @@
 // 경로 엔진(src/route/)을 실제 데이터(public/data)로 돌려, check_route.py 의 Python 기준 구현과 대조할 결과를 JSON으로 쓴다.
 // 실행: node web/scripts/route_check.mjs <질의.json> <결과.json>   (보통 저장소 루트의 check_route.py 가 부른다)
-// 질의 = { transfers: [ {tag, B, a:[line, code, 정차 i], d:[line, code, 정차 i]} | null ],
+// 질의 = { transfers: [ {tag, W, B, a:[line, code, 정차 i], d:[line, code, 정차 i]} | null ],
 //          plans: [ {id, tag, origin, home, nowSec} ] }
-// 결과 = { transfers: [ {p, a_dist_key, d_dist_key} | null ], plans: [ {id, ms, status, best, options, leave_by} ] }
+//   W = B 모형 걸음 시간(초, 환승거리 ÷ 1.2), B = B 채택 전 모형의 시간표 여유(없으면 null)
+// 결과 = { transfers: [ {p, yhat, slack, s90, s80, p_pre, a_dist_key, d_dist_key} | null ], plans: [ {id, ms, status, best, options, leave_by} ] }
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { loadRouteData, planTrip, timetableOf } from "../src/route/index.js";
-import { pickArrDist, pickDepDist, transferProb } from "../src/route/prob.js";
+import { pickArrDist, pickDepDist, transferProb, transferProbB } from "../src/route/prob.js";
 import { NONE } from "../src/route/network.js";
 
 const DATA_DIR = new URL("../public/data/", import.meta.url);
@@ -28,7 +29,7 @@ for (const tag of ["DAY", "SAT", "END"]) {
   tripIdx[tag] = new Map(data.rawTrips[tag].trips.map((t, i) => [`${t.line}|${t.code}`, i]));
 }
 
-// prob_table 행 하나: 엔진의 분포 선택(pickArrDist·pickDepDist)과 transferProb 를 그대로 쓴다
+// 환승 하나: B 모형(transferProbB)과, 비교용으로 B 채택 전 모형(pickArrDist·pickDepDist·transferProb)
 function transferQuery(q) {
   if (!q) return null;
   const tt = timetableOf(data, q.tag);
@@ -37,9 +38,19 @@ function transferQuery(q) {
   const a = stopOf(q.a);
   const d = stopOf(q.d);
   const arrA = tt.stopArr[a.s] !== NONE ? tt.stopArr[a.s] : tt.stopDep[a.s];
+  const depD = tt.stopDep[d.s] !== NONE ? tt.stopDep[d.s] : tt.stopArr[d.s];
+  const tripA = data.rawTrips[q.tag].trips[tripIdx[q.tag].get(`${q.a[0]}|${q.a[1]}`)];
+  const b = transferProbB(data.modelB, {
+    aLine: a.line, aCode: q.a[1], aStart: tripA.start ?? null, arrA,
+    dLine: d.line, dCode: q.d[1], depD, walkW: q.W, dayType,
+  });
   const aDist = pickArrDist(data.dists, a.line, dayType, arrA, tt.stopFlags[a.s]);
   const dDist = pickDepDist(data.dists, d.line, dayType, tt.stopFlags[d.s]);
-  return { p: transferProb(aDist, dDist, q.B), a_dist_key: aDist?.key ?? null, d_dist_key: dDist?.key ?? null };
+  return {
+    p: b.p, yhat: b.yhat, slack: b.slack, s90: b.s90, s80: b.s80,
+    p_pre: q.B == null ? null : transferProb(aDist, dDist, q.B),
+    a_dist_key: aDist?.key ?? null, d_dist_key: dDist?.key ?? null,
+  };
 }
 
 // 결과 크기를 줄인다: legs 의 stops 배열과 prob_row 원본 행은 빼고 combo_id 만 남긴다

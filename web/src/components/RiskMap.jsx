@@ -4,7 +4,7 @@ import { loadKakaoMaps } from "../kakao";
 
 // 위험한 환승역 지도(카카오맵). 환승역마다 점 하나: 색 = 그 요일에 시간표상 갈아탈 수 있는 막차 환승 중 가장 낮은 성공 확률,
 // 크기 = 23시·0시 하차 인원. 위험·아슬아슬한 역과 고른 역에는 이름표를 붙인다. 점을 누르면 그 역만 목록에 남긴다.
-// worst: Map(물리 역 id → 최악 확률). 없는 역은 "시간표상 가능한 조합 없음"(회색).
+// worst: Map(물리 역 id → 최악 확률, B 모형 p_b). 없는 역은 "시간표상 가능한 조합 없음"(회색).
 export default function RiskMap({ stations, worst, selected, onSelect }) {
   const boxRef = useRef(null);
   const mapRef = useRef(null);

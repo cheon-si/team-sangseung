@@ -14,15 +14,25 @@ export function buildNetwork(raw) {
 
   // 같은 노드끼리의 환승(same_line 지선 환승)은 "같은 노드 다른 열차" 대기 0초 대신 그 도보를 쓴다.
   // 같은 (from, to) 행이 여러 개면 가장 짧은 도보를 쓴다.
+  // 환승거리(distance_m, B 모형 걸음 시간 W = 거리 ÷ 1.2)는 그 가장 짧은 도보 행의 값(동률이면 먼저 나온 행)을 쓴다.
   const sameNodeWalk = new Int32Array(n);
+  const sameNodeDist = new Map(); // 노드 → 같은 노드 환승 행의 distance_m
   const best = new Map(); // "from>to" → walk_sec
+  const distByEdge = new Map(); // "from>to" → distance_m(없으면 null)
   for (const t of raw.transfers) {
+    const dist = t.distance_m ?? null;
     if (t.from === t.to) {
-      sameNodeWalk[t.from] = sameNodeWalk[t.from] > 0 ? Math.min(sameNodeWalk[t.from], t.walk_sec) : t.walk_sec;
+      if (!(sameNodeWalk[t.from] > 0) || t.walk_sec < sameNodeWalk[t.from]) {
+        sameNodeWalk[t.from] = t.walk_sec;
+        sameNodeDist.set(t.from, dist);
+      }
       continue;
     }
     const key = `${t.from}>${t.to}`;
-    if (!best.has(key) || t.walk_sec < best.get(key)) best.set(key, t.walk_sec);
+    if (!best.has(key) || t.walk_sec < best.get(key)) {
+      best.set(key, t.walk_sec);
+      distByEdge.set(key, dist);
+    }
   }
   const edges = [...best].map(([key, walk]) => [...key.split(">").map(Number), walk]);
   edges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
@@ -44,10 +54,19 @@ export function buildNetwork(raw) {
     stationById,
     lineColors: raw.line_colors ?? {},
     sameNodeWalk,
+    sameNodeDist,
+    distByEdge,
     adjStart,
     adjTo,
     adjWalk,
   };
+}
+
+// 노드 from 에서 내려 노드 to 의 열차를 탈 때의 환승거리(m). 환승 자료에 거리가 없으면 null.
+// 같은 노드: 지선 환승 행이 있으면 그 거리, 없으면(같은 승강장 다른 열차) 0
+export function transferDistance(net, from, to) {
+  if (from === to) return net.sameNodeDist.has(from) ? net.sameNodeDist.get(from) : 0;
+  return net.distByEdge.get(`${from}>${to}`) ?? null;
 }
 
 // trips_{TAG}.json → 정차 평탄화 배열 + 연결(연속 정차쌍) 배열. 연결은 출발 시각 오름차순.

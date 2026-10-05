@@ -32,8 +32,10 @@ const TABS = [
 
 // 화면 1·2. 모바일: 파랑 헤더 + 지도 전면 + 끌어올리는 하단 시트 + 하단 탭바. 넓은 화면: 왼쪽 패널(헤더·시트 내용·탭바) + 오른쪽 지도.
 // data = 기본 엔진 data(역·지연 분포, 시간표 없음), raw = 그 원본 JSON. 요일 시간표는 useDayData 가 그 요일만 읽는다.
-// riskOpen: 위험한 환승역 화면이 위에 열려 있는가(탭바 활성 표시용)
-export default function MainScreen({ data: baseData, raw, home, onChangeHome, preset, onOpenRisk, onCloseRisk, riskOpen, onPreset }) {
+// riskOpen / methodOpen: 위험한 환승역 / 「어떻게 계산했나요」 화면이 위에 열려 있는가(탭바 활성 표시용). onCloseRisk 는 둘 다 닫는다
+export default function MainScreen({
+  data: baseData, raw, home, onChangeHome, preset, onOpenRisk, onCloseRisk, riskOpen, onPreset, onOpenMethod, methodOpen,
+}) {
   const desktop = useMediaQuery("(min-width: 768px)");
   const [demo, setDemo] = useState(() => (preset.nowSec != null || preset.tag ? { nowSec: preset.nowSec, tag: preset.tag } : null));
   const clock = useClock(demo);
@@ -184,7 +186,7 @@ export default function MainScreen({ data: baseData, raw, home, onChangeHome, pr
           <Icon name="chevronRight" className="h-5 w-5 text-muted" />
         </button>
       </section>
-      <Footnote />
+      <Footnote onOpenMethod={onOpenMethod} />
     </div>
   );
 
@@ -221,7 +223,7 @@ export default function MainScreen({ data: baseData, raw, home, onChangeHome, pr
       if (!riskOpen) onOpenRisk();
       return;
     }
-    if (riskOpen) onCloseRisk();
+    if (riskOpen || methodOpen) onCloseRisk();
     setModal({ home: null, demo: "demo", mine: "home" }[id]);
   };
   const tabBar = (fixed) => <TabBar active={activeTab} onSelect={selectTab} fixed={fixed} />;
@@ -325,6 +327,7 @@ export default function MainScreen({ data: baseData, raw, home, onChangeHome, pr
           <div className="px-3 pt-1 pb-4">
             <h2 id="menu-title" className="px-2 pb-2 text-[13px] font-semibold text-muted">메뉴</h2>
             <MenuItem icon="chart" title="위험한 환승역" sub="분석 결과 · 역별 막차 환승 확률" onClick={() => { close(); onOpenRisk(); }} />
+            <MenuItem icon="info" title="어떻게 계산했나요" sub="데이터 · 판정 · 모형 · 검증 · 핵심 발견" onClick={() => { close(); onOpenMethod(); }} />
             <MenuItem icon="home" title="집 역 바꾸기" sub={home} onClick={() => setModal("home")} />
             <MenuItem icon="pin" title="출발역 바꾸기" sub={origin?.id ?? "정하지 않음"} onClick={() => setModal("origin")} />
             <MenuItem icon="clock" title="시각·요일 바꾸기" sub="시연 모드" onClick={() => setModal("time")} />
@@ -466,18 +469,25 @@ function SaferHint({ journey, safe, onSelect }) {
   );
 }
 
-// 근거 한 줄: 실측 기간·밤 수 (delay_cdf.json meta)
-function Footnote() {
+// 근거 한 줄: B 모형 설명·학습 밤·검증 수치(model_b_findings.json, 수치는 export_model_b.py 한 곳에서 관리)
+function Footnote({ onOpenMethod }) {
+  const f = useJson("model_b_findings");
   const cdf = useJson("delay_cdf");
-  const n = cdf?.meta?.nights;
-  if (!n?.list?.length) return null;
-  const md = (d) => `${Number(d.slice(4, 6))}/${Number(d.slice(6, 8))}`;
+  if (!f) return null;
+  const v = f.validation;
   return (
-    <p className="px-4 pt-5 text-[12px] leading-relaxed text-muted">
-      확률은 {md(n.list[0])}~{md(n.list.at(-1))} 밤 22~02시에 직접 수집한 열차 지연(평일 {n.weekday}밤·주말 {n.weekend}밤
-      {cdf.meta.provisional ? ", 잠정" : ""})으로 계산했어요. 주말 기록이 부족한 일부 노선은 평일 기록을 빌렸어요(환승 상세에 표시).
-      환승이 여럿이면 환승끼리 서로 영향이 없다고 가정한 추정치예요. 시각은 시간표 기준이에요.
-    </p>
+    <div className="px-4 pt-5 text-[12px] leading-relaxed text-muted">
+      <p>
+        확률은 다중회귀(노선·요일·경과 운행시간) + 과거 오차 분포로 계산했어요({f.data.period} {f.data.nights}밤 직접 수집
+        {cdf?.meta?.provisional ? ", 잠정" : ""}). 시간표 판단보다 오차(Brier)가 {v.reduction_pct}% 작아요({v.brier_baseline}→{v.brier_model}).
+        환승이 여럿이면 환승끼리 서로 영향이 없다고 가정한 추정치예요. 시각은 시간표 기준이에요.
+      </p>
+      {onOpenMethod && (
+        <button type="button" onClick={onOpenMethod} className="mt-1 flex min-h-11 items-center gap-1 font-semibold text-brand-ink">
+          어떻게 계산했나요 <Icon name="chevronRight" className="h-4 w-4" />
+        </button>
+      )}
+    </div>
   );
 }
 

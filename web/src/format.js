@@ -62,3 +62,13 @@ export const TONE = {
   danger: { text: "text-danger-ink", bg: "bg-danger", soft: "bg-danger/10", border: "border-danger/45", hex: "#f43f5e" },
   none: { text: "text-muted", bg: "bg-soft", soft: "bg-canvas", border: "border-line", hex: "#b9cbe2" },
 };
+
+// 초 → "2분 6초" / "34초" / "−20초"(음수). B 모형의 필요 여유·지금 여유 표시용. signed 면 양수에 + 를 붙인다
+export function minSecText(sec, signed = false) {
+  if (sec == null) return "-";
+  const s = Math.round(sec);
+  const sign = s < 0 ? "−" : signed && s > 0 ? "+" : "";
+  const a = Math.abs(s);
+  const m = Math.floor(a / 60);
+  return `${sign}${m > 0 ? `${m}분${a % 60 ? ` ${a % 60}초` : ""}` : `${a}초`}`;
+}

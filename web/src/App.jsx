@@ -5,32 +5,47 @@ import MainScreen, { TABBAR_BOTTOM } from "./screens/MainScreen";
 import { loadSaved, readPreset, saveValue } from "./settings";
 import { stationById, useRouteData } from "./usePlan";
 
-// 보조 화면(위험한 환승역)은 그래프 라이브러리가 무거워 열 때만 불러온다
+// 보조 화면(위험한 환승역 · 어떻게 계산했나요)은 열 때만 불러온다(위험한 환승역은 그래프 라이브러리가 무겁다)
 const RiskScreen = lazy(() => import("./screens/RiskScreen"));
+const MethodScreen = lazy(() => import("./screens/MethodScreen"));
+
+const VIEWS = { "#risk": "risk", "#method": "method" };
+const viewOfHash = () => VIEWS[window.location.hash] ?? "main";
 
 // 앱 뼈대: 기본 데이터(역·지연 분포)를 한 번 읽고 화면을 고른다. 요일 시간표는 메인 화면이 그 요일만 따로 읽는다.
 // 집 역 없음 → 화면 0(집 등록) / 있음 → 화면 1·2(지도 + 시트) / #risk → 위험한 환승역(보고서·심사용)
+// #method → 「어떻게 계산했나요」(B 모형 설명)
 export default function App() {
   const [preset, setPreset] = useState(readPreset);
   const route = useRouteData();
   const [home, setHome] = useState(() => preset.home || loadSaved("home"));
-  const [view, setView] = useState(() => (window.location.hash === "#risk" ? "risk" : "main"));
-  const openedInApp = useRef(false);
+  const [view, setView] = useState(viewOfHash);
+  const openedInApp = useRef(0); // 앱 안에서 연 보조 화면 수(1이면 뒤로 가기로 닫는다)
 
   useEffect(() => {
-    const onHash = () => setView(window.location.hash === "#risk" ? "risk" : "main");
+    const onHash = () => setView(viewOfHash());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  const openRisk = () => {
-    openedInApp.current = true;
-    window.location.hash = "risk";
+  // 보조 화면끼리는 쌓지 않는다(위험한 환승역 → 어떻게 계산했나요로 가면 바꿔 끼움). 닫으면 항상 지도 화면으로
+  const openView = (name) => {
+    if (viewOfHash() !== "main") {
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#${name}`);
+      setView(name);
+      return;
+    }
+    openedInApp.current += 1;
+    window.location.hash = name;
   };
+  const openRisk = () => openView("risk");
+  const openMethod = () => openView("method");
   const closeRisk = () => {
     // 앱 안에서 열었으면 뒤로 가기, 링크로 바로 들어왔으면 주소만 바꾼다
-    if (openedInApp.current) window.history.back();
-    else {
+    if (openedInApp.current > 0) {
+      openedInApp.current -= 1;
+      window.history.back();
+    } else {
       window.history.replaceState(null, "", window.location.pathname + window.location.search);
       setView("main");
     }
@@ -57,13 +72,13 @@ export default function App() {
 
   // 위험한 환승역은 지도 화면 위에 덮어 연다(돌아왔을 때 출발역·시연 시각이 그대로 남도록).
   // 모바일 메인 화면에서는 하단 탭바가 보이도록 탭바 높이만큼 비운다(넓은 화면은 전체를 덮고 뒤로 가기 버튼을 쓴다)
-  const risk = view === "risk" && (
+  const risk = (view === "risk" || view === "method") && (
     <div
       className="fixed inset-x-0 top-0 z-[60] overflow-y-auto bg-canvas"
       style={{ bottom: withTabs && !desktop ? TABBAR_BOTTOM : 0 }}
     >
       <Suspense fallback={<p className="p-8 text-muted">불러오는 중…</p>}>
-        <RiskScreen onBack={closeRisk} />
+        {view === "risk" ? <RiskScreen onBack={closeRisk} onOpenMethod={openMethod} /> : <MethodScreen onBack={closeRisk} />}
       </Suspense>
     </div>
   );
@@ -78,6 +93,7 @@ export default function App() {
         key={preset.key}
         data={route.data} raw={route.raw} home={home} onChangeHome={pickHome} preset={preset}
         onOpenRisk={openRisk} onCloseRisk={closeRisk} riskOpen={view === "risk"} onPreset={applyPreset}
+        onOpenMethod={openMethod} methodOpen={view === "method"}
       />
     );
   }

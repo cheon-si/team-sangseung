@@ -3,10 +3,11 @@ import { hhmm, minText, pctText, signedMinText, TONE, toneOf, untilText, withYeo
 import { lineColorOf, nodeOf } from "../usePlan";
 import Icon from "./Icon";
 import LinePill from "./LinePill";
+import ModelBNote from "./ModelBNote";
 
 // 경로 결과(화면 2) 타임라인 카드(레퍼런스 오른쪽 화면): 채운 파랑 점 출발역 → 노선 칩 승차 → "N개 역 ▾" → 연한 점 하차
 // → 환승 카드(⚠ = 놓치면 귀가 불가, 누르면 화면 3) → … → 빈 원 집 도착. 왼쪽 막대는 노선 공식 색.
-// 시간표 시각은 오른쪽 연파랑 숫자, 실측 확률은 판정 색 굵은 글씨로 구분한다.
+// 시간표 시각은 오른쪽 연파랑 숫자, 확률(B 모형)은 판정 색 굵은 글씨로 구분한다.
 export default function RouteTimeline({ data, journey, homeId, originWalkSec, onTransferClick }) {
   const rides = journey.legs.filter((l) => l.type === "ride");
 
@@ -157,9 +158,10 @@ function TransferRow({ data, transfer: t, walkSec, onClick }) {
         </div>
         <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <span className={`text-[24px] leading-none font-extrabold tabular-nums ${TONE[tone].text}`}>{pctText(t.p)}</span>
-          <span className="text-[13px] text-muted">환승 성공 확률 · 실측 지연 기반</span>
+          <span className="text-[13px] text-muted">환승 성공 확률</span>
         </div>
-        <div className="mt-1.5 text-[13px] text-muted tabular-nums">시간표 여유 {signedMinText(t.buffer_sec)}</div>
+        <div className="mt-1.5 text-[13px] text-muted tabular-nums">시간표 여유 {signedMinText(t.slack_sec)}</div>
+        <ModelBNote s90={t.s90} slack={t.slack_sec} toLine={t.to_line} compact />
         {t.critical ? (
           <div className="mt-2 flex items-center gap-1.5 text-[13px] font-semibold text-danger-ink">
             <Icon name="warning" className="h-4 w-4 shrink-0" strokeWidth={2.4} /> 놓치면 이 역에서 지하철로는 집에 못 가요

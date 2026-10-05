@@ -5,8 +5,8 @@ import Modal from "../components/Modal";
 import RiskDetail from "../components/RiskDetail";
 import RiskMap from "../components/RiskMap";
 import { DAY_TYPES } from "../config";
-import { loadJson, stationId } from "../data";
-import { hhmm, minText, pctText, signedMinText, TONE, toneOf } from "../format";
+import { loadJson, stationId, useJson } from "../data";
+import { hhmm, minSecText, minText, pctText, signedMinText, TONE, toneOf } from "../format";
 
 const PAGE = 20; // 목록은 20개씩 더 보기
 const SURPRISE_MIN_P = 0.3; // "시간표로는 안 되는데 실제로는 되는" 환승으로 보여 줄 최소 확률
@@ -14,8 +14,9 @@ const TONE_LABEL = { danger: "위험", gamble: "아슬아슬", safe: "안전" };
 const DAY_SHORT = { DAY: "평일", SAT: "토요일", END: "휴일" };
 
 // 보조 화면 "위험한 환승역" (보고서·심사용). 막차 조합표(prob_table)를 위험한 순서로 훑어보는 화면.
+// 확률은 B 모형(p_b, 팀 최종 채택). B 채택 전 모형 값(p_success)은 prob_table 에 비교용으로만 남아 있다.
 // 메인 화면과 같은 밝은 테마(연하늘 배경 + 흰 카드, index.css 토큰). 요일을 고르면 지도(역별 최악 확률)·요약 수·목록이 함께 바뀐다.
-export default function RiskScreen({ onBack }) {
+export default function RiskScreen({ onBack, onOpenMethod }) {
   const [src, setSrc] = useState(null); // { prob, alt, network }
   const [failed, setFailed] = useState(false);
   const [tag, setTag] = useState("DAY");
@@ -33,24 +34,24 @@ export default function RiskScreen({ onBack }) {
   }, []);
   useEffect(() => setLimit(PAGE), [tag, tone, station, query]);
 
-  const rows = useMemo(() => (src ? src.prob.rows.filter((r) => r.tt_tag === tag && r.p_success != null) : []), [src, tag]);
+  const rows = useMemo(() => (src ? src.prob.rows.filter((r) => r.tt_tag === tag && r.p_b != null) : []), [src, tag]);
   // 시간표상 갈아탈 수 있는(여유 ≥ 0) 막차 환승을 위험한 순서로
-  const feasible = useMemo(() => rows.filter((r) => r.buffer_sec >= 0).sort((a, b) => a.p_success - b.p_success), [rows]);
+  const feasible = useMemo(() => rows.filter((r) => r.buffer_sec >= 0).sort((a, b) => a.p_b - b.p_b), [rows]);
   // 시간표상 불가인데 갈아탈 막차가 늦게 떠나 실제로는 꽤 성공하는 환승
   const surprises = useMemo(
-    () => rows.filter((r) => r.buffer_sec < 0 && r.p_success >= SURPRISE_MIN_P).sort((a, b) => b.p_success - a.p_success),
+    () => rows.filter((r) => r.buffer_sec < 0 && r.p_b >= SURPRISE_MIN_P).sort((a, b) => b.p_b - a.p_b),
     [rows],
   );
   const counts = useMemo(() => {
     const c = { danger: 0, gamble: 0, safe: 0 };
-    feasible.forEach((r) => (c[toneOf(r.p_success)] += 1));
+    feasible.forEach((r) => (c[toneOf(r.p_b)] += 1));
     return c;
   }, [feasible]);
   const worst = useMemo(() => {
     const m = new Map();
     for (const r of feasible) {
       const id = stationId(r.station);
-      if (!m.has(id) || r.p_success < m.get(id)) m.set(id, r.p_success);
+      if (!m.has(id) || r.p_b < m.get(id)) m.set(id, r.p_b);
     }
     return m;
   }, [feasible]);
@@ -59,7 +60,7 @@ export default function RiskScreen({ onBack }) {
     () =>
       feasible.filter(
         (r) =>
-          (!tone || toneOf(r.p_success) === tone) &&
+          (!tone || toneOf(r.p_b) === tone) &&
           (!station || stationId(r.station) === station) &&
           (!q || stationId(r.station).includes(q)),
       ),
@@ -67,6 +68,7 @@ export default function RiskScreen({ onBack }) {
   );
   const lineColor = (l) => src?.network.line_colors?.[l] ?? "#64748b";
   const m = src?.prob.meta;
+  const fd = useJson("model_b_findings")?.data; // B 모형 학습 밤(평일·주말·공휴일)
 
   return (
     <div className="min-h-dvh bg-canvas text-text">
@@ -115,8 +117,8 @@ export default function RiskScreen({ onBack }) {
               실제로는 놓치는 막차 환승
             </h2>
             <p className="mt-2 text-[14px] leading-relaxed text-muted">
-              {DAY_SHORT[tag]} 막차 환승 {feasible.length}개의 실측 성공 확률이에요.
-              {m?.provisional && ` 평일 ${m.nights.weekday}밤 · 주말 ${m.nights.weekend}밤 기준 잠정 결과.`}
+              {DAY_SHORT[tag]} 막차 환승 {feasible.length}개의 성공 확률(다중회귀 + 과거 오차 분포)이에요.
+              {m?.provisional && fd && ` 평일 ${fd.weekday_nights}밤 · 주말·공휴일 ${fd.weekend_nights}밤 기준 잠정 결과.`}
             </p>
 
             <div className="mt-4 grid grid-cols-3 gap-2" role="group" aria-label="판정별 개수">
@@ -184,9 +186,14 @@ export default function RiskScreen({ onBack }) {
             )}
 
             <footer className="mt-12 border-t border-line pt-5 text-[12px] leading-relaxed text-muted">
-              서울 열린데이터광장 실시간 지하철 위치·도착 정보를 22:00~02:00, 3분 간격으로 직접 수집해 계산했어요. 노선 단위 지연 분포를 각 역에
-              적용한 값이라 역별 개별 추정은 아니에요. 확률은 타고 온 막차의 도착 지연과 갈아탈 막차의 출발 지연을 모두 반영했어요. 2026
-              통계최강자전 · 팀 상승.
+              서울 열린데이터광장 실시간 지하철 위치·도착 정보를 22:00~02:00, 3분 간격으로 직접 수집해 계산했어요. 확률은 노선·요일·경과
+              운행시간으로 지연 차이(막차 출발 지연 − 내 열차 도착 지연)를 예측하고 과거 오차 분포로 매긴 값이라 역별 개별 추정은 아니에요.
+              2026 통계최강자전 · 팀 상승.
+              {onOpenMethod && (
+                <button type="button" onClick={onOpenMethod} className="mt-1 flex min-h-11 items-center gap-1 font-semibold text-brand-ink">
+                  어떻게 계산했나요 <Icon name="chevronRight" className="h-4 w-4" />
+                </button>
+              )}
             </footer>
           </main>
         </div>
@@ -201,10 +208,10 @@ export default function RiskScreen({ onBack }) {
   );
 }
 
-// 목록 한 줄: 역 · 노선 → 노선 · 확률(판정 색) · 방면 · 여유 · 도보 · 구간
+// 목록 한 줄: 역 · 노선 → 노선 · 확률(판정 색) · 방면 · 여유 · 도보 · 90%에 필요한 여유
 function RiskCard({ row: r, lineColor, onClick, muted = false }) {
-  const tone = muted ? "none" : toneOf(r.p_success);
-  const ci = r.ci_low != null ? `95% ${pctText(r.ci_low)}~${pctText(r.ci_high)}` : null;
+  const tone = muted ? "none" : toneOf(r.p_b);
+  const need = r.s90_sec != null ? `90%엔 ${minSecText(Math.ceil(r.s90_sec))} 필요` : null;
   return (
     <li>
       <button type="button" onClick={onClick} className="card-shadow flex w-full items-stretch gap-3 rounded-2xl bg-surface p-3 text-left hover:bg-chip">
@@ -220,12 +227,12 @@ function RiskCard({ row: r, lineColor, onClick, muted = false }) {
             {r.a_dest}행 {hhmm(r.arrive_sec)} 도착 → {r.d_dest}행 {hhmm(r.depart_sec)} 출발
           </span>
           <span className="mt-0.5 block text-[12px] text-muted tabular-nums">
-            여유 {signedMinText(r.buffer_sec)} · 도보 {minText(r.walk_sec)}
-            {ci && ` · ${ci}`}
+            여유 {signedMinText(r.slack_b_sec ?? r.buffer_sec)} · 도보 {minText(r.walk_sec)}
+            {need && ` · ${need}`}
           </span>
         </span>
         <span className={`shrink-0 self-center text-[26px] font-extrabold tabular-nums tracking-[-0.02em] ${muted ? "text-muted" : TONE[tone].text}`}>
-          {pctText(r.p_success)}
+          {pctText(r.p_b)}
         </span>
       </button>
     </li>

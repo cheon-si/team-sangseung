@@ -130,7 +130,7 @@ test("best: nowSec 이후 가장 빨리 도착하는 여정과 Journey 필드", 
   );
   const t = r.best.transfers[0];
   for (const key of ["at_station", "from_line", "to_line", "from_node", "to_node", "arr_A", "dep_D", "walk_sec",
-    "buffer_sec", "p", "q", "critical", "a_dist_key", "d_dist_key"]) {
+    "buffer_sec", "p", "q", "critical", "model", "slack_sec", "yhat", "s90", "s80", "el_min", "a_dist_key"]) {
     assert.ok(key in t, key);
   }
   assert.equal(t.at_station, "X");
@@ -230,7 +230,7 @@ test("nearestStations: 직선거리 순 k곳, walk_sec = 거리 × 1.3 ÷ 1.2", 
 
 // ── loadRouteData ───────────────────────────────────────────
 
-test("loadRouteData: fetchJson 으로 5개 파일을 읽고, prob_table 이 실패해도 진행한다", async () => {
+test("loadRouteData: fetchJson 으로 6개 파일(model_b 포함)을 읽고, prob_table 이 실패해도 진행한다", async () => {
   const raw = makeRaw(TRIPS);
   const files = {
     network: raw.network,
@@ -238,6 +238,7 @@ test("loadRouteData: fetchJson 으로 5개 파일을 읽고, prob_table 이 실�
     trips_SAT: raw.trips.SAT,
     trips_END: raw.trips.END,
     route_dists: raw.route_dists,
+    model_b: { meta: {}, coef: { 절편: 0, el10: 0 }, resid: [-60, -30, 0, 30] },
   };
   const asked = [];
   const fetchJson = async (name) => {
@@ -246,8 +247,9 @@ test("loadRouteData: fetchJson 으로 5개 파일을 읽고, prob_table 이 실�
     return files[name];
   };
   const loaded = await loadRouteData(fetchJson);
-  assert.deepEqual(asked.sort(), ["network", "prob_table", "route_dists", "trips_DAY", "trips_END", "trips_SAT"]);
+  assert.deepEqual(asked.sort(), ["model_b", "network", "prob_table", "route_dists", "trips_DAY", "trips_END", "trips_SAT"]);
   assert.equal(loaded.probIndex, null);
+  assert.equal(loaded.modelB.n, 4);
   const r = planTrip(loaded, { origin: "O", home: "H", tag: "DAY", nowSec: 82000 });
   assert.equal(r.status, "ok");
   assert.equal(r.best.arrive_sec, 84700);

@@ -1,13 +1,16 @@
 """작업 8 1단계. 파이프라인 결과 → 앱이 읽는 JSON 3종 (web/public/data/).
 
     prob_table.json   조합 × 요일 유형(DAY/SAT/END)별 성공 확률, 잭나이프 구간, 시간표 여유
-                      p_success = 2차 모형(갈아탈 막차 출발 지연까지 반영, 주 모형), p_first = 1차(정시 출발 가정)
+                      p_b = B 모형(팀 최종 채택: 다중회귀 + 잔차 경험분포, export_model_b.py) — 화면의 주 확률
+                      s90_sec = B 모형으로 90% 확률이 되는 최소 시간표 여유, slack_b_sec = B 정의 여유(W = 거리 ÷ 1.2)
+                      p_success = 2차 모형(B 채택 전 주 모형), p_first = 1차(정시 출발 가정) — 비교용으로만 남김
     delay_cdf.json    셀별 밤 균등 ECDF 격자 (−120~+1800초, 15초)
-    station_alt.json  환승역 좌표·대안 + 역별 최악·중앙 성공 확률(평일)
+    station_alt.json  환승역 좌표·대안 + 역별 최악·중앙 성공 확률(평일, p_b 기준)
 
 판정(타세요/도박/대안)은 넣지 않는다. 앱 src/config.js 의 임계값으로 계산해서,
 팀원이 파이썬 없이 임계값을 바꿀 수 있게 한다.
-끝에서 export_route.py가 귀가 경로용 5종(network, trips_DAY/SAT/END, route_dists)을 같은 지연 분포 객체로 만든다.
+끝에서 export_route.py가 귀가 경로용 5종(network, trips_DAY/SAT/END, route_dists)을 같은 지연 분포 객체로 만들고,
+export_model_b.py가 B 모형(model_b.json, model_b_findings.json)을 쓴다.
 검증에 실패하면 종료 코드 1.
 
 사용: python export_for_app.py [--train-until YYYYMMDD]
@@ -23,8 +26,10 @@ import numpy as np
 import pandas as pd
 
 import common as c
+import export_model_b as mb
 import export_route
 from fit_delay import GRID, load_delays
+from preprocess import load_timetable
 from validate import dep_dists, jackknife_conv, jackknife_p, load_dep_delays, night_sorted, night_sorted_dict
 
 WEB_DATA = c.BASE_DIR / "web" / "public" / "data"
@@ -58,8 +63,9 @@ def clean(x):
     return x
 
 
-def build(train_until: str | None) -> tuple[dict, dict, dict, dict]:
-    """앱 JSON 3종과, 귀가 경로 분포(export_route)가 같은 객체를 쓰도록 by_cell_d·last_a·deps·학습 밤을 함께 돌려준다."""
+def build(train_until: str | None, model_b: dict) -> tuple[dict, dict, dict, dict]:
+    """앱 JSON 3종과, 귀가 경로 분포(export_route)가 같은 객체를 쓰도록 by_cell_d·last_a·deps·학습 밤을 함께 돌려준다.
+    model_b = export_model_b.build_model() 결과(행마다 B 확률 p_b·s90_sec 계산에 쓴다)."""
     pairs = pd.read_csv(c.PROCESSED_DIR / "last_train_pairs.csv",
                         dtype={"from_line": str, "to_line": str, "a_hour_band": str})
     cells = pd.read_csv(c.PROCESSED_DIR / "delay_cells.csv", dtype={"line": str, "hour_band": str})
@@ -72,6 +78,7 @@ def build(train_until: str | None) -> tuple[dict, dict, dict, dict]:
     deps = dep_dists(load_dep_delays(nights))
     last_a = dep_dists(load_dep_delays(nights, status="arr"))     # c.LASTK_A_LINES의 타고 온 열차 분포
     tags = {n: c.day_info(n) for n in nights}
+    starts = {t: export_route.trip_starts(load_timetable(t)) for t in export_route.TAGS}   # B 모형 경과운행시간용
 
     rows = []
     for _, r in pairs.iterrows():
@@ -85,6 +92,10 @@ def build(train_until: str | None) -> tuple[dict, dict, dict, dict]:
         if jk["p"] is None:      # D 출발 분포가 없으면 1차로 대체하고 표시
             jk = {**jk1, "ci_note": f"first_order_fallback:{jk1['ci_note']}"}
         cell = cells.set_index("dist_key").loc[key] if key in set(cells["dist_key"]) else None
+        # B 모형: 행의 A·D 열차코드로 2호선 지선 판정, A 열차 시발 시각으로 경과운행시간
+        b = mb.transfer_b(model_b, r["from_line"], r["a_code"], starts[r["tt_tag"]].get((r["from_line"], r["a_code"])),
+                          r["a_arr_sec"], r["to_line"], r["d_code"], r["d_dep_sec"],
+                          mb.walk_of(r["distance_m"], r["walk_sec"]), r["day_type"] != "weekday")
         rows.append({k: clean(v) for k, v in {
             "combo_id": r["combo_id"], "tt_tag": r["tt_tag"], "day_type": r["day_type"],
             "station": r["station"], "to_station": r["to_station"],
@@ -97,6 +108,9 @@ def build(train_until: str | None) -> tuple[dict, dict, dict, dict]:
             "buffer_sec": int(r["buffer_sec"]), "buffer_min": round(r["buffer_sec"] / 60, 1),
             "p_success": jk["p"], "ci_low": jk["ci_low"], "ci_high": jk["ci_high"], "ci_note": jk["ci_note"],
             "p_first": jk1["p"],
+            "a_code": r["a_code"], "d_code": r["d_code"],
+            "p_b": b["p"], "s90_sec": round(b["s90"], 1), "slack_b_sec": round(b["slack"], 1),
+            "yhat_b": round(b["yhat"], 1), "el_min": round(b["el10"] * 10, 1),
             "dep_fallback": "/".join(deps["_fallback"].get((r["to_line"], r["day_type"]), ())) or None,
             "arr_fallback": ("/".join(last_a["_fallback"].get((r["from_line"], r["day_type"]), ())) or None)
                             if r["from_line"] in c.LASTK_A_LINES else None,
@@ -110,6 +124,7 @@ def build(train_until: str | None) -> tuple[dict, dict, dict, dict]:
             "commit": subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True,
                                      text=True, cwd=c.BASE_DIR).stdout.strip(),
             "provisional": True, "ci_method": "night_jackknife_t", "model": "second_order_conv",
+            "model_b": {k: model_b["meta"][k] for k in ("version", "n", "r2", "resid_sd_sec")},
             "nights": {"weekday": sum(1 for t in tags.values() if t[1] == "weekday"),
                        "weekend": sum(1 for t in tags.values() if t[1] == "weekend"), "list": nights},
             "train_until": train_until}
@@ -140,15 +155,16 @@ def build(train_until: str | None) -> tuple[dict, dict, dict, dict]:
         alt = json.load(f)
     day = pd.DataFrame(rows)
     # 지도 색: 시간표상 갈아탈 수 있는 조합(여유 ≥ 0) 중에서만 본다. 애초에 불가능한 조합(확률 0)을 섞으면
-    # 거의 모든 역이 0%가 되어 "시간표로는 되는데 실제로는 위험한 곳"이 보이지 않는다.
-    day = day[(day["tt_tag"] == "DAY") & day["p_success"].notna() & (day["buffer_sec"] >= 0)]
+    # 거의 모든 역이 0%가 되어 "시간표로는 되는데 실제로는 위험한 곳"이 보이지 않는다. 확률은 B 모형(p_b)
+    day = day[(day["tt_tag"] == "DAY") & day["p_b"].notna() & (day["buffer_sec"] >= 0)]
     day["sid"] = day["station"].replace({"이수": "총신대입구"})
-    agg = day.groupby("sid")["p_success"].agg(["min", "median"])
+    agg = day.groupby("sid")["p_b"].agg(["min", "median"])
     for s in alt["stations"]:
         if s["station"] in agg.index:
             s["worst_p"] = round(float(agg.loc[s["station"], "min"]), 4)
             s["median_p"] = round(float(agg.loc[s["station"], "median"]), 4)
     alt["meta"].update({k: meta[k] for k in ("generated_at", "commit", "provisional", "nights")})
+    alt["meta"]["p_model"] = "B (worst_p·median_p = prob_table p_b)"
     route_src = {"by_cell_d": by_cell_d, "last_a": last_a, "deps": deps, "nights": nights, "meta": meta}
     return prob, cdf, alt, route_src
 
@@ -181,7 +197,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="앱 JSON 내보내기 (plan.md 작업 8)")
     parser.add_argument("--train-until", default=c.CONFIRM_START)
     args = parser.parse_args()
-    prob, cdf, alt, route_src = build(args.train_until)
+    model_b = mb.build_model()       # B 모형 적합(보고서 수치 대조 출력). prob_table p_b 계산과 model_b.json 이 같은 객체
+    prob, cdf, alt, route_src = build(args.train_until, model_b)
     errs = validate_json(prob, cdf, alt)
     if errs:
         print("검증 실패:\n  " + "\n  ".join(errs))
@@ -200,6 +217,10 @@ def main() -> None:
     if errs:
         print("귀가 경로 데이터 검증 실패:\n  " + "\n  ".join(errs))
         sys.exit(1)
+    mb.write(model_b)
+    day = rows[(rows["tt_tag"] == "DAY") & (rows["buffer_sec"] >= 0)]
+    print(f"B 확률 p_b {int(rows['p_b'].notna().sum())}행 · 평일 여유 ≥ 0 행 중 p_b < 0.9: "
+          f"{int((day['p_b'] < 0.9).sum())}/{len(day)}")
 
 
 if __name__ == "__main__":

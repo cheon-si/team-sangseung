@@ -5,17 +5,18 @@ import { lineColorOf } from "../usePlan";
 import Icon from "./Icon";
 import LinePill from "./LinePill";
 import MissedAlt from "./MissedAlt";
+import ModelBNote from "./ModelBNote";
 
 // 그래프 라이브러리(recharts)는 무거워서 "지연 분포 보기"를 눌렀을 때만 불러온다
 const CdfChart = lazy(() => import("./CdfChart"));
 
-// 화면 3. 위험 환승 상세 — 확률·95% 구간·시간표 여유·도보·쉬운 설명 한 문장. 분포 그래프는 접어 둔다.
+// 화면 3. 위험 환승 상세 — 확률(B 모형)·90%에 필요한 여유·시간표 여유·도보·쉬운 설명 한 문장. 참고 분포 그래프는 접어 둔다.
 export default function TransferSheet({ data, transfer: t }) {
   const cdf = useJson("delay_cdf");
+  const model = useJson("model_b");
   const [showChart, setShowChart] = useState(false);
   const tone = toneOf(t.p);
   const dist = arrivalDist(cdf, t.a_dist_key);
-  const row = t.prob_row;
 
   return (
     <div className="px-5 pt-2 pb-6">
@@ -36,10 +37,11 @@ export default function TransferSheet({ data, transfer: t }) {
       </div>
 
       <p className="mt-3 text-[13px] leading-relaxed text-muted tabular-nums">
-        {row?.ci_low != null ? `95% 구간 ${pctText(row.ci_low)}~${pctText(row.ci_high)}` : "95% 구간 미산출"}
-        {` · ${basisText(t)}`}
+        {basisText(model)}
         {cdf?.meta?.provisional ? " · 잠정" : ""}
       </p>
+
+      <ModelBNote s90={t.s90} slack={t.slack_sec} toLine={t.to_line} />
 
       {t.critical && (
         <div className="mt-3 flex items-center gap-2 rounded-2xl bg-danger/10 px-3 py-2.5 text-[14px] font-semibold text-danger-ink">
@@ -50,14 +52,14 @@ export default function TransferSheet({ data, transfer: t }) {
       )}
 
       <dl className="mt-4 divide-y divide-line rounded-2xl bg-canvas px-4 text-[15px]">
-        <Fact k="시간표 여유" v={signedMinText(t.buffer_sec)} strong />
+        <Fact k="시간표 여유" v={signedMinText(t.slack_sec)} strong />
         <Fact k="환승 도보" v={minText(t.walk_sec)} strong />
         <Fact k={`${t.from_line}호선 도착 (시간표)`} v={hhmm(t.arr_A)} />
         <Fact k={`${t.to_line}호선 출발 (시간표)`} v={hhmm(t.dep_D)} />
         {!t.critical && <Fact k="놓쳤을 때 귀가 확률" v={pctText(t.q)} />}
       </dl>
 
-      <p className="mt-4 text-[16px] leading-relaxed text-text">{plainSentence(t, dist)}</p>
+      <p className="mt-4 text-[16px] leading-relaxed text-text">{plainSentence(t)}</p>
 
       {t.critical && (
         <div className="mt-4">
@@ -74,17 +76,17 @@ export default function TransferSheet({ data, transfer: t }) {
             onClick={() => setShowChart((v) => !v)}
             className="mt-5 flex min-h-12 w-full items-center justify-between rounded-2xl bg-chip px-4 text-[15px] font-semibold text-brand-ink"
           >
-            지연 분포 보기
+            지연 분포 보기 (참고)
             <Icon name="chevronDown" className={`h-5 w-5 transition-transform ${showChart ? "rotate-180" : ""}`} />
           </button>
           {showChart && (
             <div className="mt-3">
               <p className="mb-2 text-[13px] leading-relaxed text-muted">
-                {t.from_line}호선이 이 시간대에 늦게 들어온 정도의 누적분포예요. 빨간 선(시간표 여유) 왼쪽 높이가 “갈아탈 열차가 정시에 떠난다면”의 성공 확률이에요.
-                위 확률은 갈아탈 열차의 출발 지연까지 반영해 이 값과 조금 다를 수 있어요.
+                참고 자료: {t.from_line}호선이 이 시간대에 늦게 들어온 정도의 누적분포(실측)예요. 위 확률은 노선·요일·경과 운행시간으로 예측한
+                지연 차이와 과거 오차 분포로 계산해서, 이 그래프 값과 바로 같지는 않아요.
               </p>
               <Suspense fallback={<div className="h-64" />}>
-                <CdfChart dist={dist} gridSec={cdf.meta.grid_sec} bufferSec={t.buffer_sec} />
+                <CdfChart dist={dist} gridSec={cdf.meta.grid_sec} bufferSec={t.slack_sec} />
               </Suspense>
             </div>
           )}
@@ -110,29 +112,19 @@ function arrivalDist(cdf, key) {
   return cdf.dists[key] ?? cdf.dists[`${key}|last3`] ?? null;
 }
 
-// 확률 근거: 실제로 쓴 지연 기록의 밤 수(엔진 a_nights·d_nights). 주말 기록이 3밤 미만이라 평일 기록을 빌린 쪽은 그렇게 밝힌다.
-// 막차 조합표(prob_table)의 n_nights 는 도착·출발 밤의 합집합이라 쓰지 않는다.
-function basisText(t) {
-  const weekend = `${t.a_dist_key ?? ""}${t.d_dist_key ?? ""}`.includes("|weekend");
-  const day = weekend ? "주말 " : "";
-  const { a_nights: a, d_nights: d, a_fallback: aFb, d_fallback: dFb } = t;
-  if (a == null && d == null) return "실측 지연 분포 기준";
-  if (!aFb && !dFb && (a === d || d == null)) return `실측 ${day}${a ?? d}밤 기준`;
-  if (aFb && dFb && a === d) return `주말 기록이 부족해 평일 ${a}밤 기록을 빌려 계산`;
-  const part = (label, n, fb) => (n == null ? null : fb ? `${label} 평일 ${n}밤(주말 기록 부족)` : `${label} ${day}${n}밤`);
-  return [part("도착 지연", a, aFb), part("출발 지연", d, dFb)].filter(Boolean).join(" · ");
+// 확률 근거 한 줄: B 모형과 학습 밤 수(model_b.json meta)
+function basisText(model) {
+  const n = model?.meta?.nights?.length;
+  return `다중회귀 + 과거 오차 분포${n ? ` · 실측 ${n}밤 기준` : ""}`;
 }
 
-// 쉬운 설명 한 문장
-function plainSentence(t, dist) {
-  if (t.buffer_sec < 0) {
-    return `시간표대로면 ${t.to_line}호선이 먼저 떠나요. ${t.to_line}호선이 늦게 출발하는 밤에만 갈아탈 수 있어요.`;
+// 쉬운 설명 한 문장(B 모형: 예측 지연 차이 ŷ = 막차가 내 열차보다 평균 몇 초 더 늦게 움직이는가)
+function plainSentence(t) {
+  const late = t.yhat != null && t.yhat > 0 ? ` 이 조합은 보통 ${t.to_line}호선이 ${Math.round(t.yhat)}초쯤 늦게 떠나 여유가 늘어요.` : "";
+  if (t.slack_sec < 0) {
+    return `시간표대로면 ${t.to_line}호선이 먼저 떠나요. ${t.to_line}호선이 늦게 출발하는 밤에만 갈아탈 수 있어요.${late}`;
   }
   if (t.p >= 0.95) return "시간표 여유가 넉넉해서 거의 매번 갈아탈 수 있어요.";
   const miss = Math.max(1, Math.round((1 - t.p) * 10));
-  const median = dist?.median_sec != null ? Math.round(dist.median_sec) : null;
-  if (median != null && median > t.buffer_sec) {
-    return `시간표 여유는 ${Math.round(t.buffer_sec)}초인데 ${t.from_line}호선은 보통 ${median}초 늦게 들어와요. 10번 중 ${miss}번쯤은 놓쳐요.`;
-  }
-  return `시간표대로면 갈아탈 수 있어요. 하지만 ${t.from_line}호선이 늦게 들어오는 밤이 있어 10번 중 ${miss}번쯤은 놓쳐요.`;
+  return `시간표대로면 갈아탈 수 있어요. 하지만 그날 밤 열차 지연에 따라 10번 중 ${miss}번쯤은 놓쳐요.`;
 }

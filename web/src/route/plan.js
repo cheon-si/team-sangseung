@@ -2,7 +2,7 @@
 
 import { buildNetwork, buildTimetable, lowerBound } from "./network.js";
 import { journeyLegs, journeySignature, searchJourney } from "./csa.js";
-import { buildDists, buildProbIndex, evaluateJourney } from "./prob.js";
+import { buildDists, buildModelB, buildProbIndex, evaluateJourney } from "./prob.js";
 
 // 달력상 평일이지만 휴일 시간표로 도는 날(토요일 공휴일 포함).
 // 출처: 저장소 루트 common.py HOLIDAYS. 파이썬 쪽을 바꾸면 여기도 같이 바꾼다.
@@ -18,29 +18,32 @@ const WALK_SPEED = 1.2; // m/s
 const TAGS = ["DAY", "SAT", "END"];
 
 // 원본 JSON 묶음 → 엔진 data 객체(동기). 테스트와 loadRouteData 가 같이 쓴다.
-// raw = { network, trips: {DAY, SAT, END}, route_dists, prob_table? }
+// raw = { network, trips: {DAY, SAT, END}, route_dists, model_b?, prob_table? }
+// model_b(B 모형)가 있으면 환승 확률은 B 로, 없으면 B 채택 전 모형(route_dists)으로 계산한다
 export function buildRouteData(raw) {
   return {
     network: buildNetwork(raw.network),
     rawTrips: raw.trips,
     timetables: {}, // 태그 → 연결 배열(처음 쓸 때 만들어 캐시)
     dists: buildDists(raw.route_dists),
+    modelB: buildModelB(raw.model_b),
     probIndex: buildProbIndex(raw.prob_table),
   };
 }
 
-// fetchJson(name) → Promise<object>. prob_table 은 선택(없거나 실패해도 진행)
+// fetchJson(name) → Promise<object>. model_b(B 모형)는 필수, prob_table 은 선택(없거나 실패해도 진행)
 export async function loadRouteData(fetchJson) {
   const get = (name) => Promise.resolve().then(() => fetchJson(name));
-  const [network, DAY, SAT, END, route_dists, prob_table] = await Promise.all([
+  const [network, DAY, SAT, END, route_dists, model_b, prob_table] = await Promise.all([
     get("network"),
     get("trips_DAY"),
     get("trips_SAT"),
     get("trips_END"),
     get("route_dists"),
+    get("model_b"),
     get("prob_table").catch(() => null),
   ]);
-  return buildRouteData({ network, trips: { DAY, SAT, END }, route_dists, prob_table });
+  return buildRouteData({ network, trips: { DAY, SAT, END }, route_dists, model_b, prob_table });
 }
 
 export function timetableOf(data, tag) {
@@ -142,6 +145,7 @@ export function planTrip(data, { origin, home, tag, nowSec }) {
     tag,
     dayType: tag === "DAY" ? "weekday" : "weekend",
     dists: data.dists,
+    modelB: data.modelB,
     probIndex: data.probIndex,
     homeNodes: h.nodes,
     memo: new Map(), // 놓친 뒤 재탐색 결과. 이번 planTrip 안에서만 쓴다

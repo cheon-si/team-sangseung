@@ -1,8 +1,16 @@
-// 경로 엔진 3/4: 환승 성공 확률과 경로 귀가 확률. 계약 2장(Python validate.conv_matrix 와 같은 값).
-//   환승 하나: B = dep_D − arr_A − walk, p = P(δA − δD ≤ B) = Σ_{δ∈D} w_δ · F_A(B + δ),  F_A(x) = Σ_{a ≤ x} w_a
+// 경로 엔진 3/4: 환승 성공 확률과 경로 귀가 확률.
+//   환승 하나(B 모형, 팀 최종 채택 — export_model_b.py · model_b.json):
+//     Δ = 막차 출발 지연 − 도착열차 도착 지연, 성공 ⟺ S + Δ ≥ 0, S = dep_D − arr_A − W, W = 환승거리 ÷ 1.2m/s
+//     ŷ = 절편 + F(도착노선) + L(갈아탈 노선) + 주말·공휴일 + el10 × (경과운행시간 분 / 10),  A_status = 실측(0)
+//     p = 1 − #(잔차 < −S − ŷ) / n   (잔차 경험분포, 노선 공통)
 //   경로: P = Π p_k + Σ_k (Π_{j<k} p_j)(1 − p_k) · q_k,  q_k = 놓친 시점에서 다시 찾은 최선 경로의 P (깊이 2까지)
+//
+//   B 채택 전 모형(2차 합성곱, 계약 2장 · Python validate.conv_matrix): p = Σ_{δ∈D} w_δ · F_A(B + δ).
+//   아래 buildDists·pickArrDist·pickDepDist·transferProb 가 그 코드다. 지우지 않고 남겨 두지만, model_b.json 을 읽은
+//   앱에서는 확률에 쓰지 않는다(model_b 가 없을 때만 대체로 쓰고, 화면의 "지연 분포 보기" 참고 그래프 키만 pickArrDist 로 고른다).
 
 import { searchJourney } from "./csa.js";
+import { lowerBound, transferDistance } from "./network.js";
 
 export const MAX_DEPTH = 2; // 놓친 뒤 재탐색 깊이. 이 깊이의 경로는 q = 0(보수적)
 
@@ -139,6 +147,73 @@ export function transferProb(aDist, dDist, buffer) {
   return Math.min(1, p);
 }
 
+// ── B 모형 ────────────────────────────────────────────────────
+
+export const WALK_SPEED_B = 1.2; // m/s. B 정의 W = 환승거리 ÷ 1.2
+const WEEKEND_KEY = "daytype[주말·공휴일]";
+
+// model_b.json → { coef, resid(정렬 Float64Array), n, meta }. 없거나 비었으면 null
+export function buildModelB(raw) {
+  if (!raw || !raw.coef || !raw.resid || raw.resid.length === 0) return null;
+  return { coef: raw.coef, resid: Float64Array.from(raw.resid), n: raw.resid.length, meta: raw.meta ?? {} };
+}
+
+// 노선 + 열차코드 → 모형 범주. 2호선 지선 열차는 코드가 1xxx(성수지선)·5xxx(신정지선), 본선은 2xxx
+export function lineLabelB(line, code) {
+  if (line === "2" && !String(code).startsWith("2")) return "2호선지선";
+  return `${line}호선`;
+}
+
+// ŷ(예측 Δ, 초). 더하는 순서는 Python export_model_b.predict_delta 와 같다(부동소수 결과까지 같게)
+export function predictDeltaB(model, fLabel, lLabel, weekend, el10) {
+  const cf = model.coef;
+  let y = cf["절편"];
+  y += cf[`F[${fLabel}]`] ?? 0;
+  y += cf[`L[${lLabel}]`] ?? 0;
+  y += weekend ? (cf[WEEKEND_KEY] ?? 0) : 0;
+  y += cf.el10 * el10;
+  return y;
+}
+
+// p = 1 − #(잔차 < −S − ŷ) / n  (Python np.searchsorted(side="left")와 같음)
+export function probB(model, slack, yhat) {
+  return 1 - lowerBound(model.resid, -slack - yhat) / model.n;
+}
+
+// p ≥ target 이 되는 최소 시간표 여유 S.
+// p(S) ≥ target ⟺ #(잔차 < −S − ŷ) ≤ k, k = ⌊n(1 − target)⌋ ⟺ −S − ŷ ≤ 잔차[k] ⟺ S ≥ −잔차[k] − ŷ
+export function requiredSlackB(model, yhat, target) {
+  const k = Math.floor(model.n * (1 - target) + 1e-9);
+  return -model.resid[k] - yhat;
+}
+
+// W(초): 환승거리 ÷ 1.2. 거리 자료가 없으면 환승 소요시간
+export const walkB = (distanceM, walkSec) => (distanceM != null ? distanceM / WALK_SPEED_B : walkSec);
+
+/**
+ * 환승 하나의 B 확률과 근거.
+ * 입력: 타고 온 열차(aLine, aCode, aStart = 시발역 출발 초), 갈아탈 열차(dLine, dCode), arrA, depD, walkW(초), dayType.
+ * el10 = (arrA − aStart) / 600. 시발 시각이 없으면 el10 = 0(구버전 trips 데이터).
+ * 출력: p, yhat(예측 Δ), slack(S), s90·s80(그 확률이 되는 최소 S), el10, 범주 이름
+ */
+export function transferProbB(model, { aLine, aCode, aStart, arrA, dLine, dCode, depD, walkW, dayType }) {
+  const el10 = aStart != null ? (arrA - aStart) / 600 : 0;
+  const fLabel = lineLabelB(aLine, aCode);
+  const lLabel = lineLabelB(dLine, dCode);
+  const yhat = predictDeltaB(model, fLabel, lLabel, dayType === "weekend", el10);
+  const slack = depD - arrA - walkW;
+  return {
+    p: probB(model, slack, yhat),
+    yhat,
+    slack,
+    s90: requiredSlackB(model, yhat, 0.9),
+    s80: requiredSlackB(model, yhat, 0.8),
+    el10,
+    fLabel,
+    lLabel,
+  };
+}
+
 // 경로 확률 공식(환승 간 독립 가정). ps[k] = 환승 k 성공 확률, qs[k] = 놓쳤을 때 귀가 확률
 export function routeProbability(ps, qs) {
   let prefix = 1; // Π_{j<k} p_j
@@ -150,7 +225,7 @@ export function routeProbability(ps, qs) {
   return prefix + missed;
 }
 
-// prob_table.json 행을 (태그, 역, 노선·방향) 키로 묶는다. 막차 조합 표시(ci_low/ci_high)용
+// prob_table.json 행을 (태그, 역, 노선·방향) 키로 묶는다. 경로의 환승이 막차 조합이면 그 행(p_b·s90_sec 등)을 붙인다
 export function buildProbIndex(probTable) {
   if (!probTable || !probTable.rows) return null;
   const index = new Map();
@@ -172,11 +247,11 @@ function matchProbRow(ctx, aNode, dNode, tripA, tripD, arrA, depD) {
 
 /**
  * 탑승 구간 목록의 귀가 확률과 환승별 상세.
- * ctx = { net, tt, dists, dayType, tag, homeNodes, probIndex, memo(Map) } — 한 번의 planTrip 동안 공유
+ * ctx = { net, tt, dists, modelB, dayType, tag, homeNodes, probIndex, memo(Map) } — 한 번의 planTrip 동안 공유
  * depth = 재탐색 깊이(최상위 경로 0). depth ≥ MAX_DEPTH 이면 q = 0.
  */
 export function evaluateJourney(ctx, segments, depth = 0) {
-  const { net, tt, dists, dayType } = ctx;
+  const { net, tt, dists, dayType } = ctx; // ctx.modelB = buildModelB(model_b.json) (없으면 B 채택 전 모형)
   const transfers = [];
   for (let k = 1; k < segments.length; k++) {
     const aConn = segments[k - 1].alight;
@@ -189,8 +264,23 @@ export function evaluateJourney(ctx, segments, depth = 0) {
     const depD = tt.cDep[dConn];
     const walk = segments[k].walk;
     const buffer = depD - arrA - walk;
+    // "지연 분포 보기" 참고 그래프용 키(B 채택 전 모형의 도착 지연 분포). 확률에는 쓰지 않는다
     const aDist = pickArrDist(dists, tripA.line, dayType, arrA, tt.stopFlags[tt.cStop[aConn] + 1]);
-    const dDist = pickDepDist(dists, tripD.line, dayType, tt.stopFlags[tt.cStop[dConn]]);
+    let b = null;
+    let p;
+    if (ctx.modelB) {
+      // B 모형: W = 환승거리 ÷ 1.2 (탐색·결정적 환승 판단은 지금처럼 환승 소요시간 walk 로 한다)
+      const walkW = walkB(transferDistance(net, aNode, dNode), walk);
+      b = transferProbB(ctx.modelB, {
+        aLine: tripA.line, aCode: tripA.code, aStart: tripA.start ?? null, arrA,
+        dLine: tripD.line, dCode: tripD.code, depD, walkW, dayType,
+      });
+      p = b.p;
+    } else {
+      // model_b.json 이 없을 때만(구버전 데이터·옛 테스트) B 채택 전 모형
+      const dDist = pickDepDist(dists, tripD.line, dayType, tt.stopFlags[tt.cStop[dConn]]);
+      p = transferProb(aDist, dDist, buffer);
+    }
     const t = {
       at_station: net.nodes[aNode].station,
       from_line: tripA.line,
@@ -203,17 +293,17 @@ export function evaluateJourney(ctx, segments, depth = 0) {
       dep_D: depD,
       walk_sec: walk,
       buffer_sec: buffer,
-      p: transferProb(aDist, dDist, buffer),
+      p,
       q: 0,
       critical: false,
+      model: b ? "B" : "pre_b",
+      // B 근거(화면 문구용): S(B 정의 시간표 여유, W = 거리 ÷ 1.2), ŷ, 90%·80% 확률이 되는 최소 S, 경과운행시간(분)
+      slack_sec: b ? b.slack : buffer,
+      yhat: b ? b.yhat : null,
+      s90: b ? b.s90 : null,
+      s80: b ? b.s80 : null,
+      el_min: b ? b.el10 * 10 : null,
       a_dist_key: aDist ? aDist.key : null,
-      d_dist_key: dDist ? dDist.key : null,
-      // 화면 근거 표시용: 실제로 쓴 표본의 밤 수, 다른 요일 유형 기록을 빌렸으면 그 키(예 "8|weekday").
-      // 주말 키(dep_last3:8|weekend)라도 3밤 미만이라 평일 표본으로 대체된 경우가 있어 키만으로는 알 수 없다
-      a_nights: aDist ? aDist.n_nights : null,
-      d_nights: dDist ? dDist.n_nights : null,
-      a_fallback: aDist ? aDist.fallback : null,
-      d_fallback: dDist ? dDist.fallback : null,
     };
     if (depth === 0) {
       const row = matchProbRow(ctx, aNode, dNode, tripA, tripD, arrA, depD);

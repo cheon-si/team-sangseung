@@ -1,4 +1,4 @@
-// 확률 모형 단위 테스트(계약 2장). 손으로 계산할 수 있는 작은 표본과 합성 노선망을 쓴다.
+// 확률 모형 단위 테스트. 손으로 계산할 수 있는 작은 계수·잔차(B 모형)와 표본(B 채택 전 모형), 합성 노선망을 쓴다.
 // 실행: node --test "web/src/route/*.test.js"   (디렉터리만 주면 Node 24에서 테스트 파일을 돌리지 않는다)
 
 import { test } from "node:test";
@@ -8,12 +8,19 @@ import { buildRouteData, planTrip, timetableOf } from "./plan.js";
 import { searchJourney } from "./csa.js";
 import {
   buildDists,
+  buildModelB,
   evaluateJourney,
   hourBandOf,
+  lineLabelB,
   pickArrDist,
   pickDepDist,
+  predictDeltaB,
+  probB,
+  requiredSlackB,
   routeProbability,
   transferProb,
+  transferProbB,
+  walkB,
 } from "./prob.js";
 
 const close = (actual, expected, eps = 1e-9) =>
@@ -24,7 +31,81 @@ function distOf(samples) {
   return buildDists({ meta: {}, dep_all: { "9|weekday": { samples } } }).depAll.get("9|weekday");
 }
 
-// ── 환승 하나: p = Σ_δ w_δ · F_A(B + δ) ──────────────────────
+// ── B 모형: ŷ, p = 1 − #(잔차 < −S − ŷ)/n, 필요 여유 ─────────────
+
+// 손 계산용 모형: 잔차 10개(정렬), 계수는 절편 10 · 도착 8호선 +20 · 환승 9호선 −50 · 주말 −5 · el10 −2
+const MB = buildModelB({
+  coef: { 절편: 10, "F[8호선]": 20, "L[9호선]": -50, "daytype[주말·공휴일]": -5, el10: -2 },
+  resid: [-40, -20, -20, 0, 10, 30, 50, 60, 80, 100],
+});
+
+test("B ŷ: 절편 + F + L + 주말 + el10 계수 × el10 (없는 범주 = 기준 0)", () => {
+  close(predictDeltaB(MB, "8호선", "9호선", false, 3), 10 + 20 - 50 - 6); // −26
+  close(predictDeltaB(MB, "8호선", "9호선", true, 3), 10 + 20 - 50 - 5 - 6); // 주말 −5
+  close(predictDeltaB(MB, "1호선", "1호선", false, 0), 10); // 기준 노선은 절편만
+});
+
+test("B p: 1 − #(잔차 < −S − ŷ)/n, 잔차 = 문턱이면 성공(side=left)", () => {
+  const yhat = -26;
+  close(probB(MB, 0, yhat), 0.5); // 문턱 26: −40,−20,−20,0,10 → 5개 미만 → .5
+  close(probB(MB, -4, yhat), 0.5); // 문턱 30: 잔차 30 은 30 미만이 아님 → 성공
+  close(probB(MB, -5, yhat), 0.4); // 문턱 31: 30 도 실패 → 6개
+  close(probB(MB, 1000, yhat), 1);
+  close(probB(MB, -1000, yhat), 0);
+});
+
+test("B 필요 여유: p ≥ 목표가 되는 최소 S = −잔차[⌊n(1−목표)⌋] − ŷ (동률 포함)", () => {
+  const yhat = -26;
+  // 90%: k = 1 → 잔차[1] = −20 → S90 = 20 + 26 = 46
+  close(requiredSlackB(MB, yhat, 0.9), 46);
+  close(probB(MB, 46, yhat), 0.9);
+  assert.ok(probB(MB, 45.9, yhat) < 0.9); // 조금이라도 작으면 −20 두 개가 실패 → .7
+  // 80%: k = 2 → 잔차[2] = −20(동률) → S80 = 46 (45.9 면 .7 < .8)
+  close(requiredSlackB(MB, yhat, 0.8), 46);
+  assert.ok(probB(MB, 45.9, yhat) < 0.8);
+  // 70%: k = 3 → 잔차[3] = 0 → S70 = 26
+  close(requiredSlackB(MB, yhat, 0.7), 26);
+  close(probB(MB, 26, yhat), 0.7);
+  assert.ok(probB(MB, 25.9, yhat) < 0.7);
+});
+
+test("B 필요 여유: n(1 − 목표)가 정수일 때 부동소수 오차로 k 가 하나 작아지지 않는다(n = 4160)", () => {
+  const big = buildModelB({ coef: { 절편: 0, el10: 0 }, resid: Array.from({ length: 4160 }, (_, i) => i) });
+  const s90 = requiredSlackB(big, 0, 0.9); // k = 416 → −416
+  assert.equal(s90, -416);
+  assert.ok(probB(big, s90, 0) >= 0.9);
+  assert.ok(probB(big, s90 - 0.5, 0) < 0.9);
+});
+
+test("2호선 지선 판정: 2호선이면서 열차코드가 2로 시작하지 않으면 지선", () => {
+  assert.equal(lineLabelB("2", "2301"), "2호선");
+  assert.equal(lineLabelB("2", "1685"), "2호선지선"); // 성수지선
+  assert.equal(lineLabelB("2", "5612"), "2호선지선"); // 신정지선
+  assert.equal(lineLabelB("1", "K504"), "1호선");
+  assert.equal(lineLabelB("8", "8238"), "8호선");
+});
+
+test("transferProbB: 주말 계수, el10 = (도착 − 시발 출발)/600, S = 출발 − 도착 − W", () => {
+  const base = { aLine: "8", aCode: "8101", arrA: 90000, dLine: "9", dCode: "9201", depD: 90100, walkW: 54 };
+  // 시발 출발 = 도착 − 4650초 → el10 = 7.75 → ŷ = 10 + 20 − 50 − 15.5 = −35.5, S = 46
+  const wd = transferProbB(MB, { ...base, aStart: 90000 - 4650, dayType: "weekday" });
+  close(wd.el10, 7.75);
+  close(wd.yhat, -35.5);
+  close(wd.slack, 46);
+  close(wd.p, 0.7); // 문턱 −10.5 → 잔차 −40, −20, −20 실패 → .7
+  close(wd.s90, 20 + 35.5);
+  assert.equal(wd.fLabel, "8호선");
+  assert.equal(wd.lLabel, "9호선");
+  const we = transferProbB(MB, { ...base, aStart: 90000 - 4650, dayType: "weekend" });
+  close(we.yhat, -40.5); // 주말 −5
+  // 시발 시각이 없으면 el10 = 0
+  close(transferProbB(MB, { ...base, aStart: null, dayType: "weekday" }).yhat, -20);
+  // W: 거리 ÷ 1.2, 거리가 없으면 환승 소요시간
+  close(walkB(159, 133), 132.5);
+  assert.equal(walkB(null, 133), 133);
+});
+
+// ── B 채택 전 모형(남겨 둔 코드): p = Σ_δ w_δ · F_A(B + δ) ─────
 
 test("손 계산 표본: A {-10:.25, 0:.25, 20:.5}, D {0:.5, 10:.5}", () => {
   const A = distOf([[-10, 0.25], [0, 0.25], [20, 0.5]]);
@@ -142,11 +223,12 @@ test("경로 공식: P = Π p + Σ (Π_{j<k} p_j)(1 − p_k) q_k", () => {
 });
 
 // 합성 노선망: A(1) → B 환승(도보 120) → 2호선 → E 환승(도보 60) → 3호선 → F(집)
-// A 분포 = 모든 노선 {-30, 0, 30, 60} 각 .25, D 분포 = 지연 0 한 점 → p = F_A(B): F(30) = .75, F(≥60) = 1
+// B 모형 = 계수 0, 잔차 {-60, -30, 0, 30} → p = P(잔차 ≥ −S): S = 30 → .75, S ≥ 60 → 1
+// (B 채택 전 모형으로 돌리면 A 분포 {-30, 0, 30, 60} 각 .25, D 지연 0 → p = F_A(B) 로 같은 값이 나온다)
 const NODE_IDS = ["1:A", "1:B", "2:B", "2:E", "3:E", "3:F"];
 const IDX = new Map(NODE_IDS.map((id, i) => [id, i]));
 
-function makeRaw({ withU2 = true, withV2 = true, withV3 = false, probRows = null } = {}) {
+function makeRaw({ withU2 = true, withV2 = true, withV3 = false, probRows = null, withModel = true } = {}) {
   const nodes = NODE_IDS.map((id, i) => {
     const [line, nm] = id.split(":");
     return { id, line, nm, station: nm, lat: 37.5 + i * 0.001, lon: 127.0 };
@@ -194,6 +276,7 @@ function makeRaw({ withU2 = true, withV2 = true, withV3 = false, probRows = null
       dep_last3: {},
       dep_all: { "2|weekday": D, "3|weekday": D },
     },
+    model_b: withModel ? { meta: {}, coef: { 절편: 0, el10: 0 }, resid: [-60, -30, 0, 30] } : null,
     prob_table: probRows ? { meta: {}, rows: probRows } : null,
   };
 }
@@ -213,8 +296,29 @@ test("재귀 P(route): p .75·.75, q0 = 재탐색 경로(.75, 그 q=0) = .75, q1
   close(r.best.p_home, 0.9375);
   assert.equal(t0.critical, false);
   assert.equal(t1.critical, false);
-  assert.equal(t0.a_dist_key, "1|weekday|all");
-  assert.equal(t0.d_dist_key, "dep_all:2|weekday");
+  assert.equal(t0.model, "B");
+  close(t0.slack_sec, 30); // 거리 자료 없음 → W = 환승 소요시간
+  close(t0.s90, 60); // k = ⌊4·0.1⌋ = 0 → −(−60) − 0
+  assert.equal(t0.a_dist_key, "1|weekday|all"); // 참고 그래프용 키는 계속 남는다
+});
+
+test("B 걸음 시간: 환승거리가 있으면 W = 거리 ÷ 1.2 (탐색 여유 buffer_sec 는 환승 소요시간 그대로)", () => {
+  const raw = makeRaw();
+  raw.network.transfers[0].distance_m = 150; // 1:B → 2:B, 도보 120초 · 거리 150m → W 125초
+  const t0 = planTrip(buildRouteData(raw), { origin: "A", home: "F", tag: "DAY", nowSec: 81000 }).best.transfers[0];
+  assert.equal(t0.buffer_sec, 30);
+  close(t0.slack_sec, 25);
+  close(t0.p, 0.5); // 잔차 ≥ −25: 0, 30 → .5
+});
+
+test("B 경과운행시간: 열차의 start(시발 출발)로 el10 을 계산해 ŷ 에 반영", () => {
+  const raw = makeRaw();
+  raw.model_b.coef.el10 = -10; // 10분당 −10초
+  raw.trips.DAY.trips[0].start = 83400 - 1800; // 1001 은 30분 전 시발 → el10 = 3 → ŷ = −30
+  const t0 = planTrip(buildRouteData(raw), { origin: "A", home: "F", tag: "DAY", nowSec: 81000 }).best.transfers[0];
+  close(t0.el_min, 30);
+  close(t0.yhat, -30);
+  close(t0.p, 0.5); // 잔차 ≥ −30 + 30 = 0: 0, 30 → .5
 });
 
 test("결정적 환승: 놓치면 다음 열차가 없으면 q = 0, critical", () => {
@@ -264,7 +368,7 @@ test("prob_row: 같은 역·노선·방향·태그이고 A 도착·D 출발 시�
   assert.equal(r.best.transfers[1].prob_row, row);
 });
 
-test("flags 로 고른 분포가 환승 상세에 남는다(lastk 노선 A 도착 flags&1, D 출발 flags&2)", () => {
+test("flags 로 고른 도착 분포 키가 참고 그래프용으로 환승 상세에 남는다(lastk 노선 A 도착 flags&1)", () => {
   const raw = makeRaw();
   raw.route_dists.meta.lastk_a_lines = ["1"];
   raw.route_dists.arr_last3 = { "1|weekday": { samples: [[0, 1]], n_nights: 9, fallback: null } };
@@ -275,18 +379,18 @@ test("flags 로 고른 분포가 환승 상세에 남는다(lastk 노선 A 도�
   const data = buildRouteData(raw);
   const t0 = planTrip(data, { origin: "A", home: "F", tag: "DAY", nowSec: 81000 }).best.transfers[0];
   assert.equal(t0.a_dist_key, "1|weekday|last3");
-  assert.equal(t0.d_dist_key, "dep_last3:2|weekday");
-  close(t0.p, 1); // A 지연 0 한 점, 여유 30초
+  close(t0.p, 0.75); // 확률은 B 모형(분포 선택과 무관), 여유 30초
 });
 
-test("다른 요일 유형 기록을 빌린 분포는 환승 상세에 밤 수와 fallback 이 남는다(화면 근거 표시용)", () => {
-  const raw = makeRaw();
-  raw.route_dists.dep_all["2|weekday"] = { samples: [[0, 1]], n_nights: 5, fallback: "2|weekend" };
-  const data = buildRouteData(raw);
-  const t0 = planTrip(data, { origin: "A", home: "F", tag: "DAY", nowSec: 81000 }).best.transfers[0];
-  assert.equal(t0.d_dist_key, "dep_all:2|weekday");
-  assert.equal(t0.d_fallback, "2|weekend");
-  assert.equal(t0.d_nights, 5);
-  assert.equal(t0.a_fallback, null);
-  assert.equal(t0.a_nights, 9);
+test("model_b 가 없으면 B 채택 전 모형(2차 합성곱)으로 계산한다", () => {
+  const raw = makeRaw({ withModel: false });
+  raw.route_dists.meta.lastk_a_lines = ["1"];
+  raw.route_dists.arr_last3 = { "1|weekday": { samples: [[0, 1]], n_nights: 9, fallback: null } };
+  raw.trips.DAY.trips[0].stops[1][3] = 1;
+  const r = planTrip(buildRouteData(raw), { origin: "A", home: "F", tag: "DAY", nowSec: 81000 });
+  const [t0, t1] = r.best.transfers;
+  assert.equal(t0.model, "pre_b");
+  close(t0.p, 1); // A = arr_last3 지연 0 한 점, 여유 30초
+  close(t1.p, 0.75); // F_A(30) = .75
+  assert.equal(t0.s90, null);
 });
