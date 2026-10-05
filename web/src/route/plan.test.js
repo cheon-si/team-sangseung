@@ -262,3 +262,53 @@ test("best: 같은 시각에 도착하는 안이 여럿이면 가장 먼저 떠�
   assert.equal(r.best.depart_sec, firstDep);
   assert.equal(firstTrip(r.best), "1001");
 });
+
+test("q: 갈아탈 열차를 놓쳐도 같은 역 다른 노선으로 집에 갈 수 있으면 결정적 환승이 아니다", () => {
+  // X역에 1·2·3호선. 1호선 O→X(83000 도착) → 2호선 X→H(83090 출발, 여유 30초, p .75).
+  // 2호선을 놓치면 같은 X역 3호선(83500 출발)으로 H에 간다 → q = 1, P = .75 + .25 · 1 = 1
+  const ids = ["1:O", "1:X", "2:X", "3:X", "2:H", "3:H"];
+  const ix = new Map(ids.map((id, i) => [id, i]));
+  const nodes = ids.map((id, i) => {
+    const [line, nm] = id.split(":");
+    return { id, line, nm, station: nm, lat: 37.5 + i * 0.01, lon: 127.0 };
+  });
+  const stations = ["O", "X", "H"].map((s) => ({
+    id: s, name: s, lines: [], lat: 37.5, lon: 127.0,
+    nodes: ids.map((id, i) => [id, i]).filter(([id]) => id.endsWith(`:${s}`)).map(([, i]) => i),
+  }));
+  const tr = (f, t) => ({ from: ix.get(f), to: ix.get(t), walk_sec: 60, src: "csv", same_line: false });
+  const A = { samples: [[-30, 0.25], [0, 0.25], [30, 0.25], [60, 0.25]], n_nights: 9, fallback: null };
+  const D = { samples: [[0, 1]], n_nights: 9, fallback: null };
+  const t = (line, code, stops) => ({
+    line, code, dir: "UP", express: false, dest: "H",
+    stops: stops.map(([id, arr, dep]) => [ix.get(id), arr, dep, 0]),
+  });
+  const raw = {
+    network: {
+      meta: {}, line_colors: {}, nodes, stations,
+      transfers: [tr("1:X", "2:X"), tr("1:X", "3:X"), tr("2:X", "3:X"), tr("3:X", "2:X")],
+    },
+    trips: {
+      DAY: { meta: {}, trips: [
+        t("1", "1001", [["1:O", null, 82400], ["1:X", 83000, null]]),
+        t("2", "2001", [["2:X", null, 83090], ["2:H", 83600, null]]),
+        t("3", "3001", [["3:X", null, 83500], ["3:H", 84100, null]]),
+      ] },
+      SAT: { meta: {}, trips: [] },
+      END: { meta: {}, trips: [] },
+    },
+    route_dists: {
+      meta: { round_sec: 5, lastk_a_lines: [], band_members: { all: ["22", "23", "24"] } },
+      arr_cells: { "1|weekday|all": { line: "1", day_type: "weekday", hour_band: "all", ...A } },
+      arr_last3: {}, dep_last3: {},
+      dep_all: { "2|weekday": D, "3|weekday": D },
+    },
+  };
+  const r = planTrip(buildRouteData(raw), { origin: "O", home: "H", tag: "DAY", nowSec: 82000 });
+  const x = r.best.transfers[0];
+  assert.equal(x.to_line, "2");
+  close(x.p, 0.75);
+  close(x.q, 1);
+  assert.equal(x.critical, false);
+  close(r.best.p_home, 1);
+});

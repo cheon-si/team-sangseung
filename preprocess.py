@@ -72,10 +72,46 @@ def load_night(night: str) -> tuple[pd.DataFrame, pd.DataFrame, int]:
 
 
 _TT_CACHE = {}
+EXCLUDED_TRAINS = {}             # 요일 태그 → {(노선, 열차코드): 사유}. load_timetable이 채운다(보고·앱 meta용)
+ADJ_MIN_STOPS = 4                # 이웃 역 쌍(연속 정차)을 배우는 열차의 최소 정차 수
+
+
+def excluded_trains(tt: pd.DataFrame) -> dict:
+    """시간표에서 빼는 열차. 반환 {(노선, 열차코드): 사유}. tt는 (노선, 열차코드, t_order)로 정렬돼 있어야 한다.
+
+    time_reversed: 연속 정차의 시각이 거꾸로 간다(뒤 정차 도착 < 앞 정차 출발, 또는 중간 정차 출발 < 도착).
+      주말 9호선 C9199는 원본 시각이 깨져(봉은사 도착 23:58:05·출발 23:20:45) 시각순 정렬이 떨어진 두 구간을 번갈아 잇는다.
+      이대로 두면 실시간 스탬프가 깨진 시각에 매칭되고(주말 5밤 84건), 주말 9호선 막차로도 뽑힌다.
+    two_stop_jump: 정차가 2개뿐인데 그 두 역이 다른 열차(정차 ADJ_MIN_STOPS개 이상)에서 한 번도 연속으로 나오지 않는다.
+      평일 5호선 59xx 13편(둔촌동→상일동처럼 지선을 건너뜀)이 걸린다. 관측 창(22:15~01:30) 안 11편은 확증 전 평일 9밤 동안
+      위치·도착 API 어디에서도 한 번도 잡히지 않았다 → 영업 열차가 아닌 것(회송 추정, 운영사 미확인)으로 본다.
+      같은 기준으로 3호선 3432(오금 24:08)는 매일 밤 잡혀 영업 열차다.
+    """
+    s = tt[~tt["pass_through"]]
+    out = {}
+    pairs, two_stop = {}, []
+    for (line, code), g in s.groupby(["line", "열차코드"], sort=False):
+        arr, dep, nm = g["arr_sec"].to_numpy(), g["dep_sec"].to_numpy(), g["nm"].to_list()
+        prev_out = np.where(np.isnan(dep), arr, dep)[:-1]
+        next_in = np.where(np.isnan(arr), dep, arr)[1:]
+        # 출발 < 도착은 중간 정차만 본다. 종착역의 출발 시각은 쓰지 않는다(C9201 종착 신논현 dep 24:00:00 < arr 24:02:10)
+        if (next_in < prev_out).any() or (dep[1:-1] < arr[1:-1]).any():
+            out[(line, code)] = "time_reversed"
+            continue
+        if len(nm) >= ADJ_MIN_STOPS:
+            for a, b in zip(nm, nm[1:]):
+                pairs[(line, a, b)] = True
+        elif len(nm) == 2:
+            two_stop.append((line, code, nm[0], nm[1]))
+    for line, code, a, b in two_stop:
+        if (line, a, b) not in pairs:
+            out[(line, code)] = "two_stop_jump"
+    return out
 
 
 def load_timetable(tt_tag: str) -> pd.DataFrame:
-    """공식 시간표 CSV 중 한 요일 태그. 열차 운행 순서(seq)와 앞뒤 역 행(prev_uid, next_uid)을 붙인다."""
+    """공식 시간표 CSV 중 한 요일 태그. 열차 운행 순서(seq)와 앞뒤 역 행(prev_uid, next_uid)을 붙인다.
+    excluded_trains()가 고른 열차는 뺀다(매칭·막차·앱 경로 모두 같은 시간표를 쓰게 하려고)."""
     if tt_tag in _TT_CACHE:
         return _TT_CACHE[tt_tag]
     tt = pd.read_csv(c.TIMETABLE_CSV, encoding="cp949", dtype=str)
@@ -91,6 +127,11 @@ def load_timetable(tt_tag: str) -> pd.DataFrame:
     # 운행 순서: 같은 (노선, 열차코드) 안에서 시각순. 도착이 없으면(시발) 출발 시각으로 정렬
     tt["t_order"] = tt["arr_sec"].fillna(tt["dep_sec"])
     tt = tt.sort_values(["line", "열차코드", "t_order"]).reset_index(drop=True)
+    bad = excluded_trains(tt)
+    EXCLUDED_TRAINS[tt_tag] = bad
+    if bad:
+        key = pd.Series(list(zip(tt["line"], tt["열차코드"])), index=tt.index)
+        tt = tt[~key.isin(set(bad))].reset_index(drop=True)
     grp = tt.groupby(["line", "열차코드"], sort=False)
     tt["seq"] = grp.cumcount()
     tt["prev_uid"] = grp["uid"].shift(1)

@@ -222,12 +222,15 @@ export function evaluateJourney(ctx, segments, depth = 0) {
     transfers.push(t);
   }
 
-  // q_k: 환승 k를 놓치면 D 노드에서 dep_D + 1초에 다시 찾은 최선 경로의 귀가 확률.
+  // q_k: 환승 k를 놓치면 다시 찾은 최선 경로의 귀가 확률. 놓쳤다 = A에서 내린 시각이 dep_D − walk 뒤라는 뜻이므로
+  // A에서 내린 노드에 dep_D − walk + 1초에 서 있는 것으로 보고, 같은 역 다른 노드(다른 노선)는 환승 도보만큼 뒤에 출발한다.
+  // D 노드에는 dep_D + 1초에 닿으므로 놓친 D는 다시 탈 수 없다. (예전에는 D 노드에서만 다시 찾아, 같은 역의 다른 노선으로
+  // 집에 갈 수 있어도 결정적 환승(⚠)으로 표시됐다: 평일 결정적 환승 958건 중 42건)
   // 최상위(depth 0)는 화면의 결정적 환승 표시 때문에 모두 계산하고, 그 아래는 결과에 영향이 있을 때만 계산한다.
   let prefix = 1;
   for (const t of transfers) {
     const matters = depth === 0 || (t.p < 1 && prefix > 0);
-    if (depth < MAX_DEPTH && matters) t.q = missedProb(ctx, t.to_node, t.dep_D + 1, depth + 1);
+    if (depth < MAX_DEPTH && matters) t.q = missedProb(ctx, t.from_node, t.dep_D - t.walk_sec + 1, depth + 1);
     t.critical = t.q === 0;
     prefix *= t.p;
   }
@@ -238,11 +241,19 @@ export function evaluateJourney(ctx, segments, depth = 0) {
   return { p_home, transfers };
 }
 
-// 노드 하나에서 sec 시각에 다시 탐색한 최선 경로의 귀가 확률(메모이즈)
+// A에서 내린 노드에 sec 시각에 서 있을 때 다시 탐색한 최선 경로의 귀가 확률(메모이즈).
+// 출발 노드 = 그 노드(같은 노드 다른 열차는 sameNodeWalk 뒤) + 환승으로 이어진 노드(도보 뒤)
 function missedProb(ctx, node, sec, depth) {
   const key = `${node}|${sec}|${depth}`;
   if (ctx.memo.has(key)) return ctx.memo.get(key);
-  const res = searchJourney(ctx.net, ctx.tt, { startNodes: [node], startSec: sec, homeNodes: ctx.homeNodes });
+  const { sameNodeWalk, adjStart, adjTo, adjWalk } = ctx.net;
+  const startNodes = [node];
+  const startTimes = [sec + sameNodeWalk[node]];
+  for (let k = adjStart[node]; k < adjStart[node + 1]; k++) {
+    startNodes.push(adjTo[k]);
+    startTimes.push(sec + adjWalk[k]);
+  }
+  const res = searchJourney(ctx.net, ctx.tt, { startNodes, startTimes, homeNodes: ctx.homeNodes });
   const p = res ? evaluateJourney(ctx, res.segments, depth).p_home : 0;
   ctx.memo.set(key, p);
   return p;

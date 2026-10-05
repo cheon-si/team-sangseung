@@ -152,10 +152,10 @@ function TransferRow({ data, transfer: t, walkSec, onClick }) {
         </div>
         {t.critical ? (
           <div className="mt-2 flex items-center gap-1.5 text-[13px] font-semibold text-danger">
-            <Icon name="warning" className="h-4 w-4" strokeWidth={2.4} /> 놓치면 {t.to_line}호선 다음 열차로는 집에 못 가요
+            <Icon name="warning" className="h-4 w-4" strokeWidth={2.4} /> 놓치면 이 역에서 지하철로는 집에 못 가요
           </div>
         ) : (
-          <div className="mt-2 text-[13px] text-ink-400">놓쳐도 다음 열차로 귀가 {pctText(t.q)}</div>
+          <div className="mt-2 text-[13px] text-ink-400">놓쳐도 다른 열차로 귀가 {pctText(t.q)}</div>
         )}
       </button>
     </Row>

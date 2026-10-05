@@ -181,7 +181,7 @@ function transferBadge(t, onClick) {
   el.style.background = TONE[t.critical ? toneOf(t.p) : "none"].hex;
   el.setAttribute(
     "aria-label",
-    `${t.at_station} 환승 성공 확률 ${pctText(t.p)}, ${t.critical ? `놓치면 ${t.to_line}호선 다음 열차로는 귀가 불가` : `놓쳐도 다음 열차로 귀가 ${pctText(t.q)}`}`,
+    `${t.at_station} 환승 성공 확률 ${pctText(t.p)}, ${t.critical ? `놓치면 이 역에서 지하철로는 귀가 불가` : `놓쳐도 다른 열차로 귀가 ${pctText(t.q)}`}`,
   );
   if (t.critical) el.insertAdjacentHTML("beforeend", iconSvg("warning"));
   const name = document.createElement("small");

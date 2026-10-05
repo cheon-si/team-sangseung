@@ -18,7 +18,7 @@ import pandas as pd
 
 import common as c
 from build_station_alt import haversine_m
-from preprocess import load_timetable
+from preprocess import ADJ_MIN_STOPS, EXCLUDED_TRAINS, load_timetable
 from validate import LAST_K, dep_dists
 
 TAGS = ("DAY", "SAT", "END")
@@ -30,7 +30,6 @@ STATION_RENAME = {"이수": "총신대입구"}   # common.transfer_stations()의
 LINE_COLORS = {"1": "#0052A4", "2": "#00A84D", "3": "#EF7C1C", "4": "#00A5DE", "5": "#996CAC",
                "6": "#CD7C2F", "7": "#747F00", "8": "#E6186C", "9": "#BDB092"}
 FLAG_ARR_LAST3, FLAG_DEP_LAST3, FLAG_DEP_LAST = 1, 2, 4
-ADJ_MIN_STOPS = 4             # 이웃 역 쌍(연속 정차)을 배우는 열차의 최소 정차 수. 2정차 열차는 시발·종착뿐이라 쓰지 않는다
 
 
 # ── network.json ────────────────────────────────────────────
@@ -143,18 +142,6 @@ def sec_or_none(x: float) -> int | None:
     return None if pd.isna(x) else int(x)
 
 
-def time_reversed(stops: list) -> bool:
-    """연속 정차의 시각이 거꾸로 가면 True: 뒤 정차 도착 < 앞 정차 출발, 또는 중간 정차 출발 < 도착.
-    9호선 C9199(SAT·END)는 원본 시각이 깨져(봉은사 도착 23:58:05·출발 23:20:45) 시각순 정렬이 서로 떨어진 두 구간을
-    번갈아 잇는다(신논현 23:40:50 → 석촌 23:41:15 등). 이런 열차를 내보내면 경로 탐색에 순간이동 연결이 생긴다."""
-    for i in range(len(stops) - 1):
-        dep = stops[i][2] if stops[i][2] is not None else stops[i][1]
-        arr = stops[i + 1][1] if stops[i + 1][1] is not None else stops[i + 1][2]
-        if arr < dep or (i > 0 and None not in stops[i][1:3] and stops[i][2] < stops[i][1]):
-            return True
-    return False
-
-
 def stop_pairs(stops: list) -> list[tuple[int, int]]:
     return [(a[0], b[0]) for a, b in zip(stops, stops[1:])]
 
@@ -203,19 +190,14 @@ def fill_skipped_stop(trip: dict, i: int, trips: list, tt: pd.DataFrame, node_ke
 
 
 def check_jumps(trips: list, tt: pd.DataFrame, node_key: list) -> tuple[list, dict]:
-    """비인접 점프가 있는 열차 처리. 반환: (남길 열차, meta 기록)
-    - 정차가 2개뿐인 점프 열차는 뺀다. 평일 5호선 59xx 13편(둔촌동→상일동처럼 지선을 건너뛰는 등)이 여기 걸린다.
-      실시간 위치 API 평일 10밤(23:00~25:10)에서 2~9호선 열차 188편 중 177편이 잡혔는데 이 창의 59xx 9편은 한 번도
-      안 잡혀 영업 열차가 아닌 것으로 본다(회송 추정, 운영사 미확인). 막차 플래그 계산에는 그대로 남는다.
+    """비인접 점프가 있는 열차 처리. 반환: (열차, meta 기록)
+    정차 2개짜리 점프 열차(평일 5호선 59xx)는 preprocess.excluded_trains가 시간표 단계에서 이미 뺐다.
     - 급행이 아닌 열차가 한 역만 건너뛰면 그 정차를 보간한다(fill_skipped_stop). 그 밖의 점프는 경고로만 남긴다."""
     pair_count = Counter((t["line"], *p) for t in trips if len(t["stops"]) >= ADJ_MIN_STOPS
                          for p in stop_pairs(t["stops"]))
-    kept, dropped, filled, warned = [], [], [], []
+    kept, filled, warned = [], [], []
     for t in trips:
         jumps = jump_positions(t, pair_count)
-        if jumps and len(t["stops"]) == 2:
-            dropped.append(f"{t['line']}:{t['code']}")
-            continue
         for i in reversed(jumps):          # 뒤에서부터 넣어야 앞쪽 위치가 밀리지 않는다
             u, v = node_key[t["stops"][i][0]][1], node_key[t["stops"][i + 1][0]][1]
             x = None if t["express"] else fill_skipped_stop(t, i, trips, tt, node_key)
@@ -225,26 +207,23 @@ def check_jumps(trips: list, tt: pd.DataFrame, node_key: list) -> tuple[list, di
             t["stops"].insert(i + 1, x)
             filled.append(f"{t['line']}:{t['code']} {u}→[{node_key[x[0]][1]} {x[1]}/{x[2]} flags {x[3]}]→{v}")
         kept.append(t)
-    return kept, {"dropped_two_stop_jump": dropped, "filled_skipped_stop": filled, "jump_warnings": warned}
+    return kept, {"filled_skipped_stop": filled, "jump_warnings": warned}
 
 
 def build_trips(tag: str, node_idx: dict, meta: dict) -> dict:
     """한 요일 태그의 열차별 정차 목록. 막차 플래그는 21:00 창이 아니라 그날 시간표 전체에서 정한다
-    (validate.load_dep_delays와 같은 규칙이라, 아래에서 빼는 열차도 플래그 계산에는 들어간다)."""
+    (validate.load_dep_delays와 같은 규칙. 둘 다 preprocess.excluded_trains로 뺀 시간표를 쓴다)."""
     tt = load_timetable(tag)
     arr3, dep3, dep1 = last_uids(tt, "arr_sec", LAST_K), last_uids(tt, "dep_sec", LAST_K), last_uids(tt, "dep_sec", 1)
     s = tt[~tt["pass_through"]]
     s = s[(s["arr_sec"] >= WINDOW_START) | (s["dep_sec"] >= WINDOW_START)]
     flags = (s["uid"].isin(arr3) * FLAG_ARR_LAST3 + s["uid"].isin(dep3) * FLAG_DEP_LAST3
              + s["uid"].isin(dep1) * FLAG_DEP_LAST)
-    trips, dropped = [], []
+    trips = []
     # load_timetable이 (노선, 열차코드, t_order)로 정렬해 두었으므로 그룹 안 순서가 곧 운행 순서
     for (line, code), g in s.assign(flags=flags).groupby(["line", "열차코드"], sort=False):
         stops = [[node_idx[(line, n)], sec_or_none(a), sec_or_none(d), int(f)]
                  for n, a, d, f in zip(g["nm"], g["arr_sec"], g["dep_sec"], g["flags"])]
-        if time_reversed(stops):
-            dropped.append(f"{line}:{code}")
-            continue
         trips.append({"line": line, "code": code, "dir": g["방향"].iat[0], "express": g["급행여부"].iat[0] == "1",
                       "dest": g["도착역"].iat[0], "stops": stops})
     node_key = [None] * len(node_idx)          # 노드 인덱스 → (노선, 역명)
@@ -255,7 +234,8 @@ def build_trips(tag: str, node_idx: dict, meta: dict) -> dict:
                      "tag": tag, "window_start_sec": WINDOW_START,
                      "flags": {str(FLAG_ARR_LAST3): f"arr_last{LAST_K}", str(FLAG_DEP_LAST3): f"dep_last{LAST_K}",
                                str(FLAG_DEP_LAST): "dep_last"},
-                     "dropped_time_reversed": dropped, **jump_meta},
+                     "excluded_trains": {f"{l}:{k}": why for (l, k), why in EXCLUDED_TRAINS[tag].items()},
+                     **jump_meta},
             "trips": trips}
 
 
@@ -349,7 +329,7 @@ def write_route_files(route_src: dict, cdf: dict, band_members: dict, out_dir: P
     for t in TAGS:
         tm = trips[t]["meta"]
         print(f"{t}: 열차 {len(trips[t]['trips'])}, 정차 {sum(len(x['stops']) for x in trips[t]['trips'])}, "
-              f"시각이 거꾸로 가 뺀 열차 {tm['dropped_time_reversed']}, 2정차 점프로 뺀 열차 {tm['dropped_two_stop_jump']}, "
+              f"시간표에서 뺀 열차 {len(tm['excluded_trains'])}편, "
               f"보간한 정차 {tm['filled_skipped_stop']}, 점프 경고 {tm['jump_warnings']}")
     print(f"분포: arr_cells {len(dists['arr_cells'])}, arr_last3 {len(dists['arr_last3'])}, "
           f"dep_last3 {len(dists['dep_last3'])}, dep_all {len(dists['dep_all'])}, 빈 키 {dists['meta']['empty']}")

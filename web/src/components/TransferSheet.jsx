@@ -45,7 +45,7 @@ export default function TransferSheet({ data, transfer: t }) {
         <div className="mt-3 flex items-center gap-2 rounded-2xl bg-danger/15 px-3 py-2.5 text-[14px] font-semibold text-danger">
           <Icon name="warning" className="h-5 w-5 shrink-0" strokeWidth={2.4} />
           {/* 엔진은 놓친 뒤 갈아탈 노선 승강장(D 노드)에서만 다시 찾는다(계약 2장). 같은 역 다른 노선으로 걸어가는 길은 보지 않으므로 그 범위로만 말한다 */}
-          놓치면 {t.to_line}호선 다음 열차로는 집에 못 가요
+          놓치면 이 역에서 지하철로는 집에 못 가요
         </div>
       )}
 

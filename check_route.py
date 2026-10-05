@@ -84,7 +84,7 @@ def load_timetable(tag: str) -> dict:
     conns.sort()
     return {"tag": tag, "trips": trips, "conns": conns, "deps": [x[0] for x in conns],
             "by_code": {(tr["line"], tr["code"]): ti for ti, tr in enumerate(trips)},
-            "dropped": raw["meta"].get("dropped_time_reversed", [])}
+            "dropped": list(raw["meta"].get("excluded_trains", {}))}
 
 
 def load_dists() -> dict:
@@ -110,7 +110,10 @@ def csa(tt: dict, net: dict, origin_nodes, t0: int, home_nodes, first=None, max_
     (엔진 csa.js와 같은 동률 규칙. 먼저 닿는 정차를 고르면 되돌아오는 열차를 분기역 너머에서 갈아타 B가 작아진다).
     first=(trip, i): 그 열차를 i번째 정차에서 첫 열차로 고정(options·출발 마감 확인용)."""
     conns, walk, home = tt["conns"], net["walk"], set(home_nodes)
-    ready = {} if first else {n: (t0, None) for n in origin_nodes}   # 노드 → (열차를 탈 수 있는 시각, 출처)
+    # origin_nodes: 노드 목록(모두 t0) 또는 {노드: 출발 시각}(놓친 뒤 같은 역 다른 노선으로 걸어가는 재탐색)
+    starts = origin_nodes if isinstance(origin_nodes, dict) else {n: t0 for n in origin_nodes}
+    ready = {} if first else {n: (t, None) for n, t in starts.items()}   # 노드 → (열차를 탈 수 있는 시각, 출처)
+    t0 = min(starts.values()) if starts and not first else t0
     readies, rounds = [ready], []
     start = bisect.bisect_left(tt["deps"], t0)
     best_t, best_k = INF, None
@@ -236,14 +239,15 @@ def journey_transfers(ctx: dict, tag: str, rides: list) -> list:
 
 
 def route_prob(ctx: dict, tag: str, rides: list, home: str, depth: int = 0):
-    """P(route) = Π p_k + Σ_k (Π_{j<k} p_j)(1 − p_k)·q_k. q_k = D 노드에서 dep_D+1초에 다시 탐색한 최선 여정의 확률
-    (깊이 MAX_DEPTH 여정의 q는 0)."""
+    """P(route) = Π p_k + Σ_k (Π_{j<k} p_j)(1 − p_k)·q_k. q_k = A에서 내린 노드에 dep_D − walk + 1초에 서 있을 때
+    (같은 역 다른 노드는 환승 도보 뒤) 다시 탐색한 최선 여정의 확률 (깊이 MAX_DEPTH 여정의 q는 0)."""
     trs = journey_transfers(ctx, tag, rides)
     if any(t["p"] is None for t in trs):
         return None, trs
     total, alive = 0.0, 1.0
     for t in trs:
-        t["q"] = best_prob(ctx, tag, t["to_node"], t["dep_D"] + 1, home, depth + 1) if depth < MAX_DEPTH else 0.0
+        t["q"] = (best_prob(ctx, tag, t["from_node"], t["dep_D"] - t["walk_sec"] + 1, home, depth + 1)
+                  if depth < MAX_DEPTH else 0.0)
         total += alive * (1 - t["p"]) * t["q"]
         alive *= t["p"]
     return total + alive, trs
@@ -252,7 +256,8 @@ def route_prob(ctx: dict, tag: str, rides: list, home: str, depth: int = 0):
 def best_prob(ctx: dict, tag: str, node: int, t: int, home: str, depth: int) -> float:
     key = (tag, node, t, home, depth)
     if key not in ctx["memo"]:
-        j = csa(ctx["tt"][tag], ctx["net"], [node], t, ctx["net"]["station_nodes"][home])
+        starts = {m: t + w for m, w in ctx["net"]["walk"][node].items()}   # 자기 노드 포함(walk[n][n])
+        j = csa(ctx["tt"][tag], ctx["net"], starts, t, ctx["net"]["station_nodes"][home])
         ctx["memo"][key] = route_prob(ctx, tag, j["rides"], home, depth)[0] if j else 0.0
     return ctx["memo"][key]
 
@@ -369,7 +374,7 @@ def check_data(ctx: dict, fails: list) -> None:
         speed = haversine_m(lat[u], lon[u], lat[v], lon[v]) / np.maximum(dt, 1)
         n_rev, n_fast = int((dt < 0).sum()), int((speed > MAX_SPEED).sum())
         print(f"  {tag}: 연결 {len(cs)}, 시각 역행 {n_rev}, {MAX_SPEED}m/s 초과 {n_fast} (최대 {speed.max():.1f}m/s),"
-              f" 시각이 거꾸로 가 export에서 뺀 열차 {ctx['tt'][tag]['dropped']}")
+              f" 시간표에서 뺀 열차(preprocess.excluded_trains) {ctx['tt'][tag]['dropped']}")
         if n_rev or n_fast:
             fails.append(f"{tag} 가짜 연결 {n_rev + n_fast}개")
 
