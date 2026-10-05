@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import BottomSheet from "../components/BottomSheet";
 import DepartureStrip from "../components/DepartureStrip";
 import Icon from "../components/Icon";
@@ -18,10 +18,22 @@ import { loadSaved, saveValue } from "../settings";
 import { nearestId, nearestStations, serviceDayOf, serviceEndOf, stationById, useDayData, usePlan } from "../usePlan";
 
 const DAY_SHORT = { DAY: "평일", SAT: "토요일", END: "휴일" };
+const TABBAR_H = 68; // 하단 탭바 높이(안전 영역 제외). 모바일 시트는 이 위에 놓인다
+// 탭바 실제 높이(아이폰 홈 막대 안전 영역 포함). App 의 위험한 환승역 화면도 같은 값으로 탭바 자리를 비운다
+export const TABBAR_BOTTOM = "calc(60px + max(env(safe-area-inset-bottom), 8px))";
 
-// 화면 1·2. 모바일: 지도 전면 + 끌어올리는 하단 시트. 넓은 화면: 왼쪽 패널 + 오른쪽 지도.
+// 하단 탭: 귀가(이 화면) · 위험한 환승역 · 시연(프리셋·시각) · 내 역(집 역 바꾸기)
+const TABS = [
+  { id: "home", icon: "home", label: "귀가" },
+  { id: "risk", icon: "chart", label: "위험 환승역" },
+  { id: "demo", icon: "play", label: "시연" },
+  { id: "mine", icon: "pin", label: "내 역" },
+];
+
+// 화면 1·2. 모바일: 파랑 헤더 + 지도 전면 + 끌어올리는 하단 시트 + 하단 탭바. 넓은 화면: 왼쪽 패널(헤더·시트 내용·탭바) + 오른쪽 지도.
 // data = 기본 엔진 data(역·지연 분포, 시간표 없음), raw = 그 원본 JSON. 요일 시간표는 useDayData 가 그 요일만 읽는다.
-export default function MainScreen({ data: baseData, raw, home, onChangeHome, preset, onOpenRisk, onPreset }) {
+// riskOpen: 위험한 환승역 화면이 위에 열려 있는가(탭바 활성 표시용)
+export default function MainScreen({ data: baseData, raw, home, onChangeHome, preset, onOpenRisk, onCloseRisk, riskOpen, onPreset }) {
   const desktop = useMediaQuery("(min-width: 768px)");
   const [demo, setDemo] = useState(() => (preset.nowSec != null || preset.tag ? { nowSec: preset.nowSec, tag: preset.tag } : null));
   const clock = useClock(demo);
@@ -31,11 +43,13 @@ export default function MainScreen({ data: baseData, raw, home, onChangeHome, pr
   const [userPos, setUserPos] = useState(null);
   const [nearby, setNearby] = useState([]);
   const [toast, setToast] = useState(null);
-  const [selDep, setSelDep] = useState(null); // 출발 시각 띠에서 고른 출발(없으면 가장 빨리 도착하는 여정)
+  const [selDep, setSelDep] = useState(null); // 추천 출발 목록에서 고른 출발(없으면 가장 빨리 도착하는 여정)
   const [transferIdx, setTransferIdx] = useState(null);
-  const [modal, setModal] = useState(null); // time | origin | home | menu
+  const [modal, setModal] = useState(null); // time | origin | home | menu | demo
   const [snap, setSnap] = useState("peek");
   const [sheet, setSheet] = useState({ peek: 280, height: 280 });
+  const headerRef = useRef(null);
+  const [headerH, setHeaderH] = useState(176); // 모바일 헤더 높이: 지도 위 여백·알림 위치에 쓴다
 
   const plan = usePlan(day.data, { origin: origin?.id, home, tag: clock.tag, nowSec: clock.nowSec });
   const serviceEnd = day.data ? serviceEndOf(day.data, clock.tag) : null; // 그 요일 마지막 열차 출발
@@ -63,6 +77,15 @@ export default function MainScreen({ data: baseData, raw, home, onChangeHome, pr
     const id = setTimeout(() => setToast(null), 3200);
     return () => clearTimeout(id);
   }, [toast]);
+
+  useLayoutEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    setHeaderH(el.offsetHeight);
+    const ro = new ResizeObserver(() => setHeaderH(el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [desktop]);
 
   // 현위치 → 직선거리 가장 가까운 역을 출발역으로 (계약 3장 nearestStations).
   // 직접 요청했는데 위치를 못 쓰면(권한 거부·시간 초과·3km 밖) 출발역 고르기 창을 바로 연다.
@@ -128,14 +151,18 @@ export default function MainScreen({ data: baseData, raw, home, onChangeHome, pr
     <SummaryCard
       data={data} plan={plan} journey={journey} isBest={isBest} originId={origin?.id} homeId={home} clock={clock}
       dayStatus={day.status} onRetryDay={day.retry} serviceEnd={serviceEnd}
-      onChangeHome={() => setModal("home")} onPickOrigin={() => setModal("origin")} onLocate={() => locate(true)}
+      onPickOrigin={() => setModal("origin")} onLocate={() => locate(true)}
       onShowRoute={showRoute} onOpenTime={() => setModal("time")}
     />
   );
 
   const body = (
-    <div className="pb-[max(env(safe-area-inset-bottom),28px)]">
-      {ok && <DepartureStrip options={options} selectedDep={journey?.depart_sec} leaveBy={plan.leave_by} onSelect={setSelDep} />}
+    <div className="pb-6">
+      {ok && (
+        <DepartureStrip
+          data={data} options={options} selectedDep={journey?.depart_sec} leaveBy={plan.leave_by} nowSec={clock.nowSec} onSelect={setSelDep}
+        />
+      )}
       {ok && <SaferHint journey={journey} safe={plan.leave_by?.safe} onSelect={setSelDep} />}
       {journey && (
         <RouteTimeline
@@ -145,26 +172,27 @@ export default function MainScreen({ data: baseData, raw, home, onChangeHome, pr
         />
       )}
       {altStation && <MissedAlt station={altStation} near={stationById(data, altStation)} title={criticalAt ? "놓치면" : "대안"} />}
-      <section className="px-4 pt-8">
-        <button type="button" onClick={onOpenRisk} className="flex min-h-16 w-full items-center gap-3 rounded-2xl bg-night-800 px-4 text-left hover:bg-night-700">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-night-700 text-ink-300">
+      <section className="px-3 pt-6">
+        <button type="button" onClick={onOpenRisk} className="card-shadow flex min-h-16 w-full items-center gap-3 rounded-2xl bg-surface px-4 text-left hover:bg-chip/40">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-chip text-brand-ink">
             <Icon name="chart" />
           </span>
           <span className="min-w-0 flex-1">
             <span className="block text-[15px] font-semibold">위험한 환승역</span>
-            <span className="block text-[13px] text-ink-400">역별 막차 환승 확률표와 위험 지도</span>
+            <span className="block text-[13px] text-muted">역별 막차 환승 확률표와 위험 지도</span>
           </span>
-          <Icon name="chevronRight" className="h-5 w-5 text-ink-400" />
+          <Icon name="chevronRight" className="h-5 w-5 text-muted" />
         </button>
       </section>
       <Footnote />
     </div>
   );
 
-  const topBar = (floating) => (
-    <TopBar
-      floating={floating} clock={clock} originId={origin?.id}
-      onTime={() => setModal("time")} onOrigin={() => setModal("origin")} onMenu={() => setModal("menu")}
+  const header = (
+    <Header
+      headerRef={headerRef} desktop={desktop} clock={clock} originId={origin?.id} homeId={home}
+      onTime={() => setModal("time")} onOrigin={() => setModal("origin")} onHome={() => setModal("home")}
+      onLocate={() => locate(true)} onMenu={() => setModal("menu")}
     />
   );
 
@@ -180,22 +208,35 @@ export default function MainScreen({ data: baseData, raw, home, onChangeHome, pr
       type="button"
       onClick={() => locate(true)}
       aria-label="내 위치에서 가까운 역으로 출발"
-      className={`absolute z-10 flex h-12 w-12 items-center justify-center rounded-full bg-night-900/95 text-ink-100 shadow-lg ring-1 ring-night-600 ${cls}`}
+      className={`absolute z-10 flex h-12 w-12 items-center justify-center rounded-full bg-brand-strong text-white shadow-[0_6px_18px_rgb(21_101_192/0.35)] ring-4 ring-white/70 ${cls}`}
     >
       <Icon name="locate" className="h-6 w-6" />
     </button>
   );
 
+  // 탭바: 지금 열린 화면을 활성으로. 위험한 환승역은 App 이 이 화면 위에 덮어 연다
+  const activeTab = riskOpen ? "risk" : modal === "demo" ? "demo" : modal === "home" ? "mine" : "home";
+  const selectTab = (id) => {
+    if (id === "risk") {
+      if (!riskOpen) onOpenRisk();
+      return;
+    }
+    if (riskOpen) onCloseRisk();
+    setModal({ home: null, demo: "demo", mine: "home" }[id]);
+  };
+  const tabBar = (fixed) => <TabBar active={activeTab} onSelect={selectTab} fixed={fixed} />;
+
   return (
     <>
       {desktop ? (
-        <div className="flex h-dvh overflow-hidden">
-          <aside className="flex w-[400px] shrink-0 flex-col border-r border-night-700 bg-night-900">
-            {topBar(false)}
-            <div className="dark-scroll min-h-0 flex-1 overflow-y-auto">
+        <div className="flex h-dvh overflow-hidden bg-page">
+          <aside className="z-10 flex w-[400px] shrink-0 flex-col bg-canvas shadow-[8px_0_30px_rgb(21_101_192/0.12)]">
+            {header}
+            <div className="soft-scroll min-h-0 flex-1 overflow-y-auto pt-3">
               {summary}
               {body}
             </div>
+            {tabBar(false)}
           </aside>
           <main className="relative min-w-0 flex-1">
             {map(48, 48)}
@@ -203,27 +244,48 @@ export default function MainScreen({ data: baseData, raw, home, onChangeHome, pr
           </main>
         </div>
       ) : (
-        <div className="relative h-dvh overflow-hidden bg-night-900">
+        <div className="relative h-dvh overflow-hidden bg-canvas">
           {/* 지도는 요약 시트 위까지만: 카카오맵 로고가 가려지지 않게 */}
-          <div className="absolute inset-x-0 top-0" style={{ bottom: Math.max(0, sheet.peek - 1) }}>
-            {map(76, snap === "mid" ? sheet.height - sheet.peek + 32 : 32)}
+          <div className="absolute inset-x-0 top-0" style={{ bottom: TABBAR_H + Math.max(0, sheet.peek - 1) }}>
+            {map(headerH + 12, snap === "mid" ? sheet.height - sheet.peek + 32 : 32)}
             {locateButton("right-3 bottom-8")}
           </div>
-          {topBar(true)}
-          <BottomSheet snap={snap} onSnapChange={setSnap} summary={summary} onLayout={setSheet}>
+          {header}
+          <BottomSheet snap={snap} onSnapChange={setSnap} summary={summary} onLayout={setSheet} bottomOffset={TABBAR_H} bottomCss={TABBAR_BOTTOM}>
             {body}
           </BottomSheet>
+          {tabBar(true)}
         </div>
       )}
 
       {toast && (
-        <div role="status" className="pointer-events-none fixed inset-x-0 top-[calc(max(env(safe-area-inset-top),12px)+56px)] z-[60] flex justify-center px-4 md:left-[400px]">
-          <span className="rounded-full bg-night-800/95 px-4 py-2.5 text-[14px] font-medium shadow-lg ring-1 ring-night-600">{toast}</span>
+        <div
+          role="status"
+          className="pointer-events-none fixed inset-x-0 z-[75] flex justify-center px-4 md:left-[400px]"
+          style={{ top: desktop ? 16 : headerH + 10 }}
+        >
+          <span className="rounded-full bg-text px-4 py-2.5 text-[14px] font-medium text-white shadow-lg">{toast}</span>
         </div>
       )}
 
       {modal === "time" && (
         <Modal onClose={close} labelledBy="time-title">
+          <TimePanel
+            clock={clock}
+            onApply={(v) => { setDemo(v); close(); }}
+            onReset={() => { setDemo(null); close(); }}
+          />
+        </Modal>
+      )}
+      {modal === "demo" && (
+        <Modal onClose={close} labelledBy="demo-title">
+          <div className="px-3 pt-1">
+            <h2 id="demo-title" className="px-2 text-[20px] font-bold">시연</h2>
+            <p className="px-2 pt-1 text-[14px] text-muted">발표용 경로를 바로 열거나, 시각·요일을 바꿔 그때 기준으로 계산해요.</p>
+            <h3 className="px-2 pt-4 pb-1 text-[13px] font-semibold text-muted">시연 프리셋 · 평일</h3>
+            <PresetList onPick={(p) => { close(); onPreset(p); }} />
+          </div>
+          <div className="mx-5 mt-3 h-px shrink-0 bg-line" />
           <TimePanel
             clock={clock}
             onApply={(v) => { setDemo(v); close(); }}
@@ -239,9 +301,9 @@ export default function MainScreen({ data: baseData, raw, home, onChangeHome, pr
               <button
                 type="button"
                 onClick={() => { locate(true); close(); }}
-                className="mb-3 flex min-h-12 shrink-0 items-center gap-2 rounded-2xl bg-night-700 px-4 text-left font-semibold"
+                className="mb-3 flex min-h-12 shrink-0 items-center gap-2 rounded-2xl bg-chip px-4 text-left font-semibold text-brand-ink"
               >
-                <Icon name="locate" className="h-5 w-5 text-me" /> 현위치에서 가장 가까운 역
+                <Icon name="locate" className="h-5 w-5" /> 현위치에서 가장 가까운 역
               </button>
             )}
             <StationPicker
@@ -254,19 +316,19 @@ export default function MainScreen({ data: baseData, raw, home, onChangeHome, pr
                 close();
               }}
             />
-            {modal === "home" && <p className="pt-2 text-center text-[12px] text-ink-500">브라우저에만 저장되고 서버로 보내지 않습니다.</p>}
+            {modal === "home" && <p className="pt-2 text-center text-[12px] text-muted">브라우저에만 저장되고 서버로 보내지 않습니다.</p>}
           </div>
         </Modal>
       )}
       {modal === "menu" && (
         <Modal onClose={close} labelledBy="menu-title">
           <div className="px-3 pt-1 pb-4">
-            <h2 id="menu-title" className="px-2 pb-2 text-[13px] font-semibold text-ink-400">메뉴</h2>
+            <h2 id="menu-title" className="px-2 pb-2 text-[13px] font-semibold text-muted">메뉴</h2>
             <MenuItem icon="chart" title="위험한 환승역" sub="분석 결과 · 역별 막차 환승 확률" onClick={() => { close(); onOpenRisk(); }} />
             <MenuItem icon="home" title="집 역 바꾸기" sub={home} onClick={() => setModal("home")} />
             <MenuItem icon="pin" title="출발역 바꾸기" sub={origin?.id ?? "정하지 않음"} onClick={() => setModal("origin")} />
             <MenuItem icon="clock" title="시각·요일 바꾸기" sub="시연 모드" onClick={() => setModal("time")} />
-            <h3 className="px-2 pt-4 pb-1 text-[13px] font-semibold text-ink-400">시연 프리셋 · 평일</h3>
+            <h3 className="px-2 pt-4 pb-1 text-[13px] font-semibold text-muted">시연 프리셋 · 평일</h3>
             <PresetList onPick={(p) => { close(); onPreset(p); }} />
           </div>
         </Modal>
@@ -280,62 +342,104 @@ export default function MainScreen({ data: baseData, raw, home, onChangeHome, pr
   );
 }
 
-function TopBar({ floating, clock, originId, onTime, onOrigin, onMenu }) {
+// 상단 헤더(레퍼런스 왼쪽 화면 축소판): 메뉴 · 출발 시각 / 흰 카드 안 출발·도착 두 줄 + 점선 + 오른쪽 둥근 현위치 버튼.
+// 모바일은 지도 위에 떠 있고, 넓은 화면은 왼쪽 패널 맨 위에 붙는다.
+// 헤더 오른쪽은 연하늘이라 흰 글씨 대비가 안 나와, 메뉴·시각 버튼은 진한 파랑 알약(.header-pill)에 얹는다
+function Header({ headerRef, desktop, clock, originId, homeId, onTime, onOrigin, onHome, onLocate, onMenu }) {
   return (
-    <div
-      className={
-        floating
-          ? "pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center gap-2 px-3 pt-[max(env(safe-area-inset-top),12px)]"
-          : "flex items-center gap-2 px-4 pt-4 pb-1"
-      }
+    <header
+      ref={headerRef}
+      className={`brand-header shrink-0 rounded-b-[28px] ${
+        desktop ? "px-4 pt-4 pb-4" : "absolute inset-x-0 top-0 z-10 px-3 pt-[max(env(safe-area-inset-top),10px)] pb-3.5 shadow-[0_8px_24px_rgb(21_101_192/0.2)]"
+      }`}
     >
-      <Chip onClick={onTime} accent={clock.isDemo}>
-        <span className="whitespace-nowrap">
-          {clock.isDemo ? "시연" : "지금"} <span className="tabular-nums">{hhmm(clock.nowSec)}</span> · {DAY_SHORT[clock.tag]}
-        </span>
-        <Icon name="chevronDown" className="h-4 w-4 shrink-0 opacity-70" />
-      </Chip>
-      <Chip onClick={onOrigin} className="min-w-0">
-        <Icon name="pin" className="h-4 w-4 shrink-0" />
-        <span className="truncate">{originId ? `${originId}에서` : "출발역 선택"}</span>
-        <Icon name="chevronDown" className="h-4 w-4 shrink-0 opacity-70" />
-      </Chip>
-      <div className="flex-1" />
-      <button
-        type="button"
-        onClick={onMenu}
-        aria-label="메뉴"
-        className="pointer-events-auto flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-night-900/95 text-ink-100 shadow-lg ring-1 ring-night-600"
-      >
-        <Icon name="menu" />
-      </button>
-    </div>
+      <div className="flex items-center gap-2">
+        <button type="button" onClick={onMenu} aria-label="메뉴" className="header-pill flex h-11 w-11 shrink-0 items-center justify-center rounded-full">
+          <Icon name="menu" />
+        </button>
+        <button type="button" onClick={onTime} className="header-pill flex h-11 min-w-0 items-center gap-1.5 rounded-full pr-2.5 pl-3.5 text-[14px] font-medium">
+          {clock.isDemo && <span className="rounded-full bg-gamble px-1.5 py-px text-[11px] font-bold text-[#1f2333]">시연</span>}
+          <span className="truncate whitespace-nowrap">
+            출발 시각: <b className="font-bold tabular-nums">{clock.isDemo ? hhmm(clock.nowSec) : `지금 ${hhmm(clock.nowSec)}`}</b> · {DAY_SHORT[clock.tag]}
+          </span>
+          <Icon name="chevronDown" className="h-4 w-4 shrink-0" />
+        </button>
+      </div>
+      <div className="card-shadow mt-3 flex items-center gap-2 rounded-2xl bg-surface py-1 pr-2 pl-3.5 text-text">
+        <div className="flex flex-col items-center self-stretch py-[19px]" aria-hidden="true">
+          <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-brand" />
+          <span className="my-1 w-0 flex-1 border-l-2 border-dashed border-soft" />
+          <span className="h-2.5 w-2.5 shrink-0 rounded-full border-2 border-brand bg-surface" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <PlaceRow label="출발" value={originId ? withYeok(originId) : "출발역 고르기"} empty={!originId} onClick={onOrigin} />
+          <div className="ml-1 h-px bg-line" />
+          <PlaceRow label="도착" value={`집(${homeId})`} onClick={onHome} />
+        </div>
+        <button
+          type="button"
+          onClick={onLocate}
+          aria-label="내 위치에서 가까운 역으로 출발"
+          className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-brand-strong text-white shadow-[0_4px_12px_rgb(21_101_192/0.35)]"
+        >
+          <Icon name="locate" className="h-6 w-6" />
+        </button>
+      </div>
+    </header>
   );
 }
 
-function Chip({ onClick, accent, className = "", children }) {
+function PlaceRow({ label, value, empty = false, onClick }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`pointer-events-auto flex h-11 items-center gap-1 rounded-full px-3 text-[14px] font-semibold shadow-lg ring-1 ${
-        accent ? "bg-gamble text-night-950 ring-gamble" : "bg-night-900/95 text-ink-100 ring-night-600"
-      } ${className}`}
-    >
-      {children}
+    <button type="button" onClick={onClick} className="flex min-h-12 w-full flex-col items-start justify-center rounded-lg px-1 text-left hover:bg-canvas">
+      <span className="text-[12px] leading-4 text-muted">{label}</span>
+      <span className={`w-full truncate text-[15px] leading-5 font-bold ${empty ? "text-brand-ink" : ""}`}>{value}</span>
     </button>
+  );
+}
+
+// 하단 탭바(흰색, 위 모서리 둥글게). 활성 탭은 파랑 채운 둥근 사각형 + 흰 아이콘. 아이콘만으로는 뜻이 모호해 작은 이름을 붙인다
+function TabBar({ active, onSelect, fixed }) {
+  return (
+    <nav
+      aria-label="주요 화면"
+      className={`${fixed ? "fixed inset-x-0 bottom-0 z-[65]" : "relative shrink-0"} rounded-t-[28px] bg-surface px-2 pt-2 pb-[max(env(safe-area-inset-bottom),8px)] shadow-[0_-6px_24px_rgb(21_101_192/0.1)]`}
+    >
+      <ul className="grid grid-cols-4">
+        {TABS.map((t) => {
+          const on = active === t.id;
+          return (
+            <li key={t.id}>
+              <button
+                type="button"
+                aria-current={on ? "page" : undefined}
+                onClick={() => onSelect(t.id)}
+                className="flex h-[52px] w-full flex-col items-center justify-center gap-0.5 rounded-xl"
+              >
+                <span className={`flex h-8 w-12 items-center justify-center rounded-xl transition-colors ${on ? "bg-brand-strong text-white" : "text-brand"}`}>
+                  <Icon name={t.icon} className="h-[22px] w-[22px]" strokeWidth={on ? 2.3 : 2} />
+                </span>
+                <span className={`text-[11px] leading-4 font-semibold ${on ? "text-brand-ink" : "text-muted"}`}>{t.label}</span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
   );
 }
 
 function MenuItem({ icon, title, sub, onClick }) {
   return (
-    <button type="button" onClick={onClick} className="flex min-h-14 w-full items-center gap-3 rounded-2xl px-3 text-left hover:bg-night-700">
-      <Icon name={icon} className="h-5 w-5 shrink-0 text-ink-300" />
+    <button type="button" onClick={onClick} className="flex min-h-14 w-full items-center gap-3 rounded-2xl px-3 text-left hover:bg-canvas">
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-chip text-brand-ink">
+        <Icon name={icon} className="h-5 w-5" />
+      </span>
       <span className="min-w-0 flex-1">
         <span className="block text-[16px] font-semibold">{title}</span>
-        {sub && <span className="block truncate text-[13px] text-ink-400">{sub}</span>}
+        {sub && <span className="block truncate text-[13px] text-muted">{sub}</span>}
       </span>
-      <Icon name="chevronRight" className="h-5 w-5 shrink-0 text-ink-500" />
+      <Icon name="chevronRight" className="h-5 w-5 shrink-0 text-muted" />
     </button>
   );
 }
@@ -345,18 +449,18 @@ function SaferHint({ journey, safe, onSelect }) {
   if (!journey || !safe || journey.p_home >= THRESHOLDS.safe || safe.depart_sec === journey.depart_sec) return null;
   const diff = shownMinutes(safe.depart_sec, journey.depart_sec); // 화면에 보이는 두 시각의 차이(초는 버림)
   return (
-    <div className="px-4 pt-3">
+    <div className="px-3 pt-3">
       <button
         type="button"
         onClick={() => onSelect(safe.depart_sec)}
-        className={`flex min-h-12 w-full items-center gap-2 rounded-2xl border px-3.5 text-left ${TONE.safe.border} ${TONE.safe.soft}`}
+        className={`flex min-h-12 w-full items-center gap-2 rounded-2xl border bg-surface px-3.5 text-left ${TONE.safe.border}`}
       >
         <span className="flex-1 text-[14px]">
           <b className="tabular-nums">{hhmm(safe.depart_sec)}</b> 출발하면{" "}
           <b className={`tabular-nums ${TONE[toneOf(safe.p_home)].text}`}>{pctText(safe.p_home)}</b>
-          <span className="text-ink-400"> · {Math.abs(diff)}분 {diff > 0 ? "일찍" : "늦게"}</span>
+          <span className="text-muted"> · {Math.abs(diff)}분 {diff > 0 ? "일찍" : "늦게"}</span>
         </span>
-        <Icon name="chevronRight" className="h-4 w-4 text-ink-400" />
+        <Icon name="chevronRight" className="h-4 w-4 text-muted" />
       </button>
     </div>
   );
@@ -369,7 +473,7 @@ function Footnote() {
   if (!n?.list?.length) return null;
   const md = (d) => `${Number(d.slice(4, 6))}/${Number(d.slice(6, 8))}`;
   return (
-    <p className="px-5 pt-5 text-[12px] leading-relaxed text-ink-500">
+    <p className="px-4 pt-5 text-[12px] leading-relaxed text-muted">
       확률은 {md(n.list[0])}~{md(n.list.at(-1))} 밤 22~02시에 직접 수집한 열차 지연(평일 {n.weekday}밤·주말 {n.weekend}밤
       {cdf.meta.provisional ? ", 잠정" : ""})으로 계산했어요. 주말 기록이 부족한 일부 노선은 평일 기록을 빌렸어요(환승 상세에 표시).
       환승이 여럿이면 환승끼리 서로 영향이 없다고 가정한 추정치예요. 시각은 시간표 기준이에요.
@@ -411,4 +515,3 @@ function initialOrigin(data, preset) {
   }
   return null;
 }
-

@@ -20,6 +20,10 @@ const PATHS = {
   chart: "M4 20V11M10 20V5M16 20v-6M2.5 20h19",
   lock: "M6 11h12a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1zM8 11V8a4 4 0 0 1 8 0v3",
   info: `${circle(12, 12, 9)}M12 16.5v-5M12 8h.01`,
+  // 하단 탭바·카드용 (레퍼런스 UI 키트의 아이콘 자리)
+  train: "M7 3h10a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3zM4 11h16M8.5 14h.01M15.5 14h.01M8 17l-2.5 4M16 17l2.5 4",
+  play: `${circle(12, 12, 9)}M10 8.5v7l5.5-3.5z`,
+  ticket: "M4 7a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v3a2 2 0 0 0 0 4v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-3a2 2 0 0 0 0-4zM14 6v2.5M14 11v2M14 15.5V18",
 };
 
 export default function Icon({ name, className = "h-5 w-5", strokeWidth = 2 }) {

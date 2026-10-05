@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { presetQuery } from "./config";
 import HomeSetup from "./screens/HomeSetup";
-import MainScreen from "./screens/MainScreen";
+import MainScreen, { TABBAR_BOTTOM } from "./screens/MainScreen";
 import { loadSaved, readPreset, saveValue } from "./settings";
 import { stationById, useRouteData } from "./usePlan";
 
@@ -51,10 +51,18 @@ export default function App() {
     setHome(next.home);
   };
 
-  // 위험한 환승역은 지도 화면 위에 덮어 연다(돌아왔을 때 출발역·시연 시각이 그대로 남도록)
+  // 메인 화면(하단 탭바 있음)을 그리는가: 집이 등록돼 있고 기본 데이터를 읽었을 때
+  const withTabs = route.status === "ready" && !!home && !!stationById(route.data, home);
+  const desktop = useMediaQuery("(min-width: 768px)");
+
+  // 위험한 환승역은 지도 화면 위에 덮어 연다(돌아왔을 때 출발역·시연 시각이 그대로 남도록).
+  // 모바일 메인 화면에서는 하단 탭바가 보이도록 탭바 높이만큼 비운다(넓은 화면은 전체를 덮고 뒤로 가기 버튼을 쓴다)
   const risk = view === "risk" && (
-    <div className="fixed inset-0 z-[60] overflow-y-auto bg-slate-50">
-      <Suspense fallback={<p className="p-8 text-slate-500">불러오는 중…</p>}>
+    <div
+      className="fixed inset-x-0 top-0 z-[60] overflow-y-auto bg-canvas"
+      style={{ bottom: withTabs && !desktop ? TABBAR_BOTTOM : 0 }}
+    >
+      <Suspense fallback={<p className="p-8 text-muted">불러오는 중…</p>}>
         <RiskScreen onBack={closeRisk} />
       </Suspense>
     </div>
@@ -63,13 +71,13 @@ export default function App() {
   let main;
   if (route.status === "loading") main = <Splash text="역 정보 불러오는 중…" />;
   else if (route.status === "error") main = <Splash text="데이터를 불러오지 못했어요. 인터넷 연결을 확인해 주세요." onRetry={route.retry} />;
-  else if (!home || !stationById(route.data, home)) main = <HomeSetup data={route.data} onPick={pickHome} onPreset={applyPreset} />;
+  else if (!withTabs) main = <HomeSetup data={route.data} onPick={pickHome} onPreset={applyPreset} />;
   else {
     main = (
       <MainScreen
         key={preset.key}
         data={route.data} raw={route.raw} home={home} onChangeHome={pickHome} preset={preset}
-        onOpenRisk={openRisk} onPreset={applyPreset}
+        onOpenRisk={openRisk} onCloseRisk={closeRisk} riskOpen={view === "risk"} onPreset={applyPreset}
       />
     );
   }
@@ -84,14 +92,26 @@ export default function App() {
 
 function Splash({ text, onRetry }) {
   return (
-    <div className="flex h-dvh flex-col items-center justify-center gap-2 px-6 text-center">
-      <p className="text-[13px] font-bold tracking-wide text-ink-400">막차 러시아룰렛</p>
-      <p className="text-[15px] text-ink-300" role={onRetry ? "alert" : "status"}>{text}</p>
+    <div className="flex h-dvh flex-col items-center justify-center gap-2 bg-canvas px-6 text-center">
+      <p className="text-[15px] font-extrabold tracking-wide text-brand-ink">막차될까</p>
+      <p className="text-[15px] text-muted" role={onRetry ? "alert" : "status"}>{text}</p>
       {onRetry && (
-        <button type="button" onClick={onRetry} className="mt-3 min-h-12 rounded-2xl bg-ink-100 px-6 font-bold text-night-900">
+        <button type="button" onClick={onRetry} className="mt-3 min-h-12 rounded-2xl bg-brand-strong px-6 font-bold text-white">
           다시 시도
         </button>
       )}
     </div>
   );
+}
+
+// 화면 폭 조건(넓은 화면 여부). MainScreen 의 같은 이름 함수와 같은 동작
+function useMediaQuery(query) {
+  const [on, setOn] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const m = window.matchMedia(query);
+    const onChange = () => setOn(m.matches);
+    m.addEventListener("change", onChange);
+    return () => m.removeEventListener("change", onChange);
+  }, [query]);
+  return on;
 }

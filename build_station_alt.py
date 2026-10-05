@@ -1,11 +1,11 @@
-"""작업 7. 환승역 좌표·심야 하차 인원·근처 올빼미버스·따릉이 (앱 station_alt.json의 바탕).
+"""작업 7. 환승역 좌표·심야 하차 인원·근처 N버스·따릉이 (앱 station_alt.json의 바탕).
 
 수집과 무관해 지금 완성한다. 확률 필드(worst_p, median_p)는 export_for_app.py가 채운다.
 
 입력:
     시간표 CSV(역사코드) → station_coords.json(BLDN_ID, LAT, LOT)   역 좌표, 코드로 직접 결합
     CardSubwayTime.jsonl   2026-07 역별 시간대 승하차, 23시·0시 하차 = 심야 하차 인원
-    CardBusTimeNew.jsonl   2026-07 버스 노선·정류장 승하차, 교통수단 코드 051 = 올빼미(N) 버스
+    CardBusTimeNew.jsonl   2026-07 버스 노선·정류장 승하차, 교통수단 코드 051 = N버스(심야버스)
     busStopLocationXyInfo.jsonl   정류장 좌표(XCRD=경도, YCRD=위도)
     tbCycleStationInfo.jsonl      따릉이 대여소 좌표
 출력: data/processed/station_alt_base.json
@@ -89,7 +89,7 @@ def night_alight() -> pd.Series:
 
 
 def owl_stops() -> pd.DataFrame:
-    """올빼미버스 정류장: 정류장 좌표 + 그 정류장에 서는 N노선 목록."""
+    """N버스 정류장: 정류장 좌표 + 그 정류장에 서는 N노선 목록."""
     b = read_jsonl(AUX / "CardBusTimeNew.jsonl")
     b = b[b["TRFC_MNS_TYPE_CD"] == "051"][["RTE_NO", "STOPS_ID"]].drop_duplicates()
     b = b[~b["STOPS_ID"].astype(str).str.startswith("998")]       # 좌표 체계가 다른 가상 정류장 ID
@@ -146,7 +146,7 @@ def main() -> None:
     out = {"meta": {"generated_at": datetime.now().isoformat(timespec="seconds"),
                     "sources": {"bus_card": "202607", "subway_card": "202607"},
                     "radius_m": {"owl_bus": OWL_RADIUS_M, "bike": BIKE_RADIUS_M},
-                    "note": "올빼미버스는 정류장 위치와 노선만 제공(운행 시각·배차 정보 없음)"},
+                    "note": "N버스는 정류장 위치와 노선만 제공(운행 시각·배차 정보 없음)"},
            "stations": stations}
     c.PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     with open(c.PROCESSED_DIR / "station_alt_base.json", "w", encoding="utf-8") as f:
@@ -155,7 +155,7 @@ def main() -> None:
     df = pd.DataFrame(stations)
     print(f"역 {len(df)}개 (목록 {c.transfer_stations()['station_id'].nunique()}개), 좌표 결측 (노선,역): {missing or '없음'}")
     print(f"심야 하차 인원 결측 역: {df.loc[df['night_alight'].isna(), 'station'].tolist() or '없음'}")
-    print(f"500m 안 올빼미버스 정류장 있는 역 {int((df['owl_bus'].str.len() > 0).sum())}개, "
+    print(f"500m 안 N버스 정류장 있는 역 {int((df['owl_bus'].str.len() > 0).sum())}개, "
           f"300m 안 따릉이 있는 역 {int((df['bike'].str.len() > 0).sum())}개")
     print(f"노선 좌표 간 최대 거리 상위: "
           f"{df.nlargest(3, 'coord_spread_m')[['station', 'coord_spread_m']].values.tolist()}")

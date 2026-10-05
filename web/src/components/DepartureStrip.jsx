@@ -1,62 +1,88 @@
-import { useEffect, useRef } from "react";
-import { hhmm, pctText, TONE, toneOf } from "../format";
+import { useState } from "react";
+import { hhmm, pctText, shownMinutes, TONE, toneOf, untilText } from "../format";
+import Icon from "./Icon";
+import { RouteChips } from "./SummaryCard";
 
-// 출발 시각별 귀가 확률 띠: "23:30 98% · 23:44 96% · 23:52 62%".
-// 시각은 시간표(회색), 확률은 실측 지연 기반 추정(판정 색)으로 구분한다(Transit 앱의 실시간/시간표 구분).
-export default function DepartureStrip({ options, selectedDep, leaveBy, onSelect }) {
-  const rowRef = useRef(null);
+const VISIBLE = 3; // 접힌 상태에서 보여 줄 카드 수(고른 출발이 항상 그 안에 들어가게 자른다)
 
-  // 고른 칩이 보이도록 가로 스크롤만 옮긴다(세로 스크롤은 건드리지 않음)
-  useEffect(() => {
-    const row = rowRef.current;
-    const chip = row?.querySelector("[aria-pressed='true']");
-    if (chip) row.scrollLeft = chip.offsetLeft - row.clientWidth / 2 + chip.clientWidth / 2;
-  }, [selectedDep, options]);
-
+// 추천 출발(레퍼런스 "Suggested Routes" 카드 목록): 출발 시각마다 카드 한 장.
+// 도보 > [노선 칩] · 소요 · 출발 시각(N분 후) · 티켓 자리에 귀가 확률(판정 색).
+// 시각은 시간표(진한 회색 값), 확률은 실측 지연 기반 추정(판정 색)으로 구분한다(Transit 앱의 실시간/시간표 구분).
+export default function DepartureStrip({ data, options, selectedDep, leaveBy, nowSec, onSelect }) {
+  const [all, setAll] = useState(false);
   if (!options?.length) return null;
   const safeDep = leaveBy?.safe?.depart_sec;
   const lastDep = leaveBy?.last?.depart_sec;
+  const selIdx = Math.max(0, options.findIndex((o) => o.depart_sec === selectedDep));
+  const start = Math.max(0, Math.min(selIdx - 1, options.length - VISIBLE));
+  const shown = all ? options : options.slice(start, start + VISIBLE);
 
   return (
-    <section className="pt-4" aria-labelledby="strip-title">
-      <div className="flex items-baseline justify-between px-4">
-        <h3 id="strip-title" className="text-[15px] font-bold">출발 시각별 귀가 확률</h3>
-        <span className="text-[12px] text-ink-500">시각은 시간표 · %는 실측 지연 기반</span>
+    <section className="px-3 pt-5" aria-labelledby="strip-title">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-2 px-1">
+        <h3 id="strip-title" className="text-[16px] font-bold">추천 출발</h3>
+        <span className="text-[12px] text-muted">시각은 시간표 · %는 실측 지연 기반</span>
       </div>
-      <div ref={rowRef} className="no-scrollbar relative mt-2 flex gap-2 overflow-x-auto scroll-smooth px-4 pt-2 pb-1">
-        {options.map((o, i) => {
+      <ul className="mt-2.5 grid gap-2.5">
+        {shown.map((o, i) => {
           const tone = toneOf(o.p_home);
           const on = o.depart_sec === selectedDep;
           const tag = o.depart_sec === lastDep ? "막차" : o.depart_sec === safeDep ? "마감" : null;
+          const waitMin = nowSec != null && o.depart_sec >= nowSec ? shownMinutes(nowSec, o.depart_sec) : null;
+          const wait = waitMin == null ? null : waitMin === 0 ? "지금 출발" : `${untilText(waitMin * 60)} 후`;
           // key 에 순서를 붙인다: 반대 방향 두 열차가 같은 시각에 떠나면 출발 시각이 겹친다
           return (
-            <button
-              key={`${o.depart_sec}-${i}`}
-              type="button"
-              aria-pressed={on}
-              onClick={() => onSelect(o.depart_sec)}
-              className={`relative flex min-h-[60px] min-w-[84px] shrink-0 flex-col items-start justify-center rounded-2xl border px-3 pb-2 text-left transition-colors ${
-                on ? "border-ink-100 bg-night-700" : "border-night-600 bg-night-800 hover:border-night-500"
-              }`}
-            >
-              <span className={`text-[13px] tabular-nums ${on ? "text-ink-100" : "text-ink-400"}`}>{hhmm(o.depart_sec)}</span>
-              <span className={`text-[18px] leading-tight font-bold tabular-nums ${TONE[tone].text}`}>{pctText(o.p_home)}</span>
-              <span className="absolute inset-x-3 bottom-1.5 h-[3px] overflow-hidden rounded-full bg-night-600">
-                <span className={`block h-full ${TONE[tone].bg}`} style={{ width: `${Math.round(o.p_home * 100)}%` }} />
-              </span>
-              {tag && (
-                <span
-                  className={`absolute -top-2 right-2 rounded-full px-1.5 py-px text-[10px] leading-4 font-bold ${
-                    tag === "막차" ? "bg-danger text-night-950" : "bg-ink-100 text-night-900"
-                  }`}
-                >
-                  {tag}
-                </span>
-              )}
-            </button>
+            <li key={`${o.depart_sec}-${i}`}>
+              <button
+                type="button"
+                aria-pressed={on}
+                onClick={() => onSelect(o.depart_sec)}
+                // 그림자는 Tailwind shadow 로 준다(.card-shadow 의 box-shadow 는 선택 테두리 ring 을 덮어 버린다)
+                className={`relative w-full shadow-[0_6px_20px_rgb(61_152_251/0.1)] rounded-2xl bg-surface p-3.5 text-left ring-2 transition ${
+                  on ? "ring-brand" : "ring-transparent hover:ring-line"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <RouteChips data={data} journey={o.journey} />
+                  <span className="shrink-0 text-[13px] text-muted">
+                    소요 <b className="text-[15px] font-bold text-text tabular-nums">{Math.round((o.arrive_sec - o.depart_sec) / 60)}분</b>
+                  </span>
+                </div>
+                <div className="mt-2.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                  <span className="text-[13px] text-muted">
+                    출발 <b className="text-[15px] font-bold text-text tabular-nums">{hhmm(o.depart_sec)}</b>
+                    {wait && <span className="tabular-nums"> · {wait}</span>}
+                  </span>
+                  <span className="flex items-center gap-1 text-[13px] text-muted">
+                    <Icon name="home" className="h-4 w-4 text-brand" />
+                    귀가 확률 <b className={`text-[17px] font-extrabold tabular-nums ${TONE[tone].text}`}>{pctText(o.p_home)}</b>
+                  </span>
+                </div>
+                {tag && (
+                  <span
+                    className={`absolute -top-2 right-3 rounded-full px-2 py-px text-[11px] leading-4 font-bold text-white ${
+                      tag === "막차" ? "bg-danger-ink" : "bg-brand-strong"
+                    }`}
+                  >
+                    {tag}
+                  </span>
+                )}
+              </button>
+            </li>
           );
         })}
-      </div>
+      </ul>
+      {options.length > VISIBLE && (
+        <button
+          type="button"
+          aria-expanded={all}
+          onClick={() => setAll((v) => !v)}
+          className="mt-1.5 flex min-h-11 w-full items-center justify-center gap-1 rounded-2xl text-[14px] font-semibold text-brand-ink hover:bg-chip/50"
+        >
+          {all ? "접기" : `출발 시각 ${options.length}개 모두 보기`}
+          <Icon name="chevronDown" className={`h-4 w-4 transition-transform ${all ? "rotate-180" : ""}`} />
+        </button>
+      )}
     </section>
   );
 }

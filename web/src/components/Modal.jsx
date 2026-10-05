@@ -26,13 +26,14 @@ export default function Modal({ onClose, labelledBy, children, tall = false }) {
     };
   }, []);
 
+  // z-[80]: 위험한 환승역 화면(z-60)·하단 탭바(z-65) 위에 뜬다
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-end justify-center md:items-center md:p-6">
+    <div className="fixed inset-0 z-[80] flex items-end justify-center md:items-center md:p-6">
       <button
         type="button"
         aria-label="닫기"
         tabIndex={-1}
-        className="modal-fade absolute inset-0 cursor-default bg-night-950/70"
+        className="modal-fade absolute inset-0 cursor-default bg-[#1d3a5f]/40"
         onClick={onClose}
       />
       <div
@@ -41,7 +42,7 @@ export default function Modal({ onClose, labelledBy, children, tall = false }) {
         aria-modal="true"
         aria-labelledby={labelledBy}
         tabIndex={-1}
-        className={`modal-in relative flex w-full flex-col overflow-hidden rounded-t-3xl border-t border-night-600 bg-night-800 pt-1.5 pb-[env(safe-area-inset-bottom)] text-ink-100 shadow-2xl outline-none md:max-w-md md:rounded-3xl md:border ${
+        className={`modal-in relative flex w-full flex-col overflow-hidden rounded-t-3xl border-t border-line bg-surface pt-1.5 pb-[env(safe-area-inset-bottom)] text-text shadow-2xl outline-none md:max-w-md md:rounded-3xl md:border ${
           tall ? "h-[86dvh] md:h-[680px]" : "max-h-[88dvh]"
         }`}
       >
@@ -50,12 +51,12 @@ export default function Modal({ onClose, labelledBy, children, tall = false }) {
             type="button"
             onClick={onClose}
             aria-label="닫기"
-            className="flex h-10 w-10 items-center justify-center rounded-full text-ink-300 hover:bg-night-700 hover:text-ink-100"
+            className="flex h-10 w-10 items-center justify-center rounded-full text-muted hover:bg-canvas hover:text-text"
           >
             <Icon name="close" className="h-5 w-5" />
           </button>
         </div>
-        <div className="dark-scroll flex min-h-0 flex-1 flex-col overflow-y-auto">{children}</div>
+        <div className="soft-scroll flex min-h-0 flex-1 flex-col overflow-y-auto">{children}</div>
       </div>
     </div>,
     document.body,

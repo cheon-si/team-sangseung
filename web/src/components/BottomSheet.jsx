@@ -7,8 +7,9 @@ const FLICK = 0.5; // 이 속도(px/ms)보다 빠르게 튕기면 그 방향 다
 
 // 끌어서 높이를 바꾸는 하단 시트(모바일). 3단: peek(요약) / mid(중간) / full(전체).
 // pointer 이벤트 하나로 터치·마우스를 함께 처리한다. 요약 단계 높이는 summary 내용 높이를 재서 맞춘다.
+// bottomOffset(px)·bottomCss: 시트를 하단 탭바 위에 놓는다(CSS 값은 안전 영역까지 포함).
 // peek·mid 에서는 세로로 끄는 동작이 모두 시트 이동이고(가로 스크롤 띠는 그대로 동작), full 에서는 본문이 스크롤된다.
-export default function BottomSheet({ snap, onSnapChange, summary, children, onLayout }) {
+export default function BottomSheet({ snap, onSnapChange, summary, children, onLayout, bottomOffset = 0, bottomCss = "0px" }) {
   const bodyRef = useRef(null);
   const summaryRef = useRef(null);
   const suppressClick = useRef(false);
@@ -38,7 +39,7 @@ export default function BottomSheet({ snap, onSnapChange, summary, children, onL
     return () => cancelAnimationFrame(id);
   }, [summaryH, settled]);
 
-  const full = vh - TOP_GAP;
+  const full = vh - TOP_GAP - bottomOffset;
   const peek = Math.min(HANDLE_H + (summaryH ?? 240), full);
   const mid = Math.min(Math.max(Math.round(vh * 0.62), peek + 150), full);
   const heights = { peek, mid, full };
@@ -117,8 +118,9 @@ export default function BottomSheet({ snap, onSnapChange, summary, children, onL
   return (
     <section
       aria-label="귀가 경로 요약"
-      className="fixed inset-x-0 bottom-0 z-20 flex flex-col rounded-t-[28px] border-t border-night-600 bg-night-900 shadow-[0_-12px_40px_rgb(6_12_27/0.45)]"
+      className="fixed inset-x-0 z-20 flex flex-col rounded-t-[28px] bg-canvas shadow-[0_-10px_30px_rgb(21_101_192/0.16)]"
       style={{
+        bottom: bottomCss,
         height: full,
         transform: `translateY(${full - height}px)`,
         transition: dragH == null && settled ? "transform 0.32s cubic-bezier(0.2, 0.8, 0.2, 1)" : "none",
@@ -141,11 +143,11 @@ export default function BottomSheet({ snap, onSnapChange, summary, children, onL
         className="flex w-full shrink-0 touch-none items-center justify-center rounded-t-[28px]"
         style={{ height: HANDLE_H }}
       >
-        <span className="h-1.5 w-10 rounded-full bg-night-500" />
+        <span className="h-1.5 w-10 rounded-full bg-soft" />
       </button>
       <div
         ref={bodyRef}
-        className={`dark-scroll min-h-0 flex-1 overscroll-contain ${snap === "full" ? "overflow-y-auto" : "overflow-hidden"}`}
+        className={`soft-scroll min-h-0 flex-1 overscroll-contain ${snap === "full" ? "overflow-y-auto" : "overflow-hidden"}`}
         onFocus={(e) => {
           // 키보드로 접힌 아래쪽 내용에 들어오면 전체로 펼친다(숨은 영역이 스크롤되어 요약이 가려지지 않게)
           if (snap !== "full" && !summaryRef.current.contains(e.target) && e.target.matches?.(":focus-visible")) onSnapChange("full");

@@ -103,7 +103,7 @@ export default function RouteMap({ data, journey, originId, homeId, userPos, pad
     const origin = stationById(data, originId);
     const home = stationById(data, homeId);
     if (origin) {
-      addOverlay(origin, pin("pin", "출발", origin.name), 5, 1, true);
+      addOverlay(origin, pin(null, "출발", origin.name), 5, 1, true);
       extend(latlng(origin));
     }
     if (home && home.id !== origin?.id) {
@@ -138,23 +138,23 @@ export default function RouteMap({ data, journey, originId, homeId, userPos, pad
   }, [status, drawCount, padTop, padBottom]);
 
   return (
-    <div className="relative h-full w-full bg-night-800">
+    <div className="map-light relative h-full w-full bg-canvas">
       <div ref={boxRef} className="absolute inset-0" />
       {status !== "ready" && (
-        <div className="absolute inset-0 flex items-center justify-center bg-[radial-gradient(circle_at_50%_35%,#1a2a4f,#060c1b_70%)] px-8 pb-24 text-center">
+        <div className="absolute inset-0 flex items-center justify-center bg-[radial-gradient(circle_at_50%_35%,#ffffff,#deeeff_70%)] px-8 pb-24 text-center">
           {status === "loading" ? (
-            <p className="text-sm text-ink-400">지도 불러오는 중…</p>
+            <p className="text-sm text-muted">지도 불러오는 중…</p>
           ) : (
             <div>
-              <p className="font-semibold text-ink-100">지도를 불러오지 못했어요</p>
-              <p className="mt-1 text-sm text-ink-400">경로와 귀가 확률은 아래 카드에서 그대로 볼 수 있어요.</p>
+              <p className="font-semibold text-text">지도를 불러오지 못했어요</p>
+              <p className="mt-1 text-sm text-muted">경로와 귀가 확률은 아래 카드에서 그대로 볼 수 있어요.</p>
               <button
                 type="button"
                 onClick={() => {
                   setStatus("loading");
                   setAttempt((a) => a + 1);
                 }}
-                className="mt-4 min-h-11 rounded-xl bg-night-700 px-4 text-sm font-semibold text-ink-100"
+                className="mt-4 min-h-11 rounded-xl bg-brand-strong px-4 text-sm font-semibold text-white"
               >
                 다시 시도
               </button>
@@ -224,13 +224,19 @@ function transferBadge(t, onClick) {
   return el;
 }
 
+// 출발·집 핀: 흰 이름표 + 아래 파랑 표식. icon 이 없으면 빈 원(출발), 있으면 그 아이콘을 넣은 물방울(집)
 function pin(icon, label, name) {
   const el = document.createElement("div");
   el.className = "map-pin";
-  el.insertAdjacentHTML("beforeend", iconSvg(icon));
+  const tag = document.createElement("span");
+  tag.className = "map-pin-label";
   const b = document.createElement("b");
   b.textContent = label;
-  el.append(b, name);
+  tag.append(b, name);
+  const mark = document.createElement("span");
+  mark.className = icon ? "map-pin-drop" : "map-pin-ring";
+  if (icon) mark.insertAdjacentHTML("beforeend", iconSvg(icon));
+  el.append(tag, mark);
   return el;
 }
 

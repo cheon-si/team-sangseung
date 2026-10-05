@@ -54,10 +54,11 @@ export function toneOf(p) {
   return "gamble";
 }
 
-// Tailwind 가 찾을 수 있도록 클래스 이름을 문자열 그대로 둔다
+// Tailwind 가 찾을 수 있도록 클래스 이름을 문자열 그대로 둔다.
+// text 는 글씨용 진한 색(*-ink, 흰·연하늘 배경 4.5:1 이상), bg·hex 는 막대·점·지도 배지용 기본색
 export const TONE = {
-  safe: { text: "text-safe", bg: "bg-safe", soft: "bg-safe/15", border: "border-safe/40", hex: "#34d399" },
-  gamble: { text: "text-gamble", bg: "bg-gamble", soft: "bg-gamble/15", border: "border-gamble/40", hex: "#fbbf24" },
-  danger: { text: "text-danger", bg: "bg-danger", soft: "bg-danger/15", border: "border-danger/40", hex: "#fb7185" },
-  none: { text: "text-ink-300", bg: "bg-ink-500", soft: "bg-night-700", border: "border-night-600", hex: "#8e9bbb" },
+  safe: { text: "text-safe-ink", bg: "bg-safe", soft: "bg-safe/10", border: "border-safe/45", hex: "#10b981" },
+  gamble: { text: "text-gamble-ink", bg: "bg-gamble", soft: "bg-gamble/10", border: "border-gamble/50", hex: "#f59e0b" },
+  danger: { text: "text-danger-ink", bg: "bg-danger", soft: "bg-danger/10", border: "border-danger/45", hex: "#f43f5e" },
+  none: { text: "text-muted", bg: "bg-soft", soft: "bg-canvas", border: "border-line", hex: "#b9cbe2" },
 };
