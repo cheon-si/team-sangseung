@@ -53,6 +53,9 @@ REPORT_FINDINGS = {
                    "nights_improved": 13, "nights_total": 13},
     "findings": {"l8_coef_sec": -112.2, "l9_coef_sec": -88.3, "s90_l8_sec": 130, "s90_l9_sec": 125,
                  "weekday_last_links": 1299, "below90": 166, "below90_pct": 12.8},
+    # 12장 민감도: 마진 60초면 365행이 50% 경계를 넘고 평일 위험 연결이 13% → 23%, 걸음 1.0~1.4m/s 사이에서 73~118행이 경계를 넘나듦
+    "sensitivity": {"margin60_risky_from_pct": 13, "margin60_risky_to_pct": 23, "margin60_flip_rows": 365,
+                    "walk_flip_rows_min": 73, "walk_flip_rows_max": 118},
 }
 
 
@@ -198,19 +201,22 @@ def required_slack(resid: list, yhat: float, target: float) -> float:
 
 
 def transfer_b(model: dict, a_line: str, a_code: str, a_start, arr_a: float, d_line: str, d_code: str,
-               dep_d: float, walk_w: float, weekend: bool) -> dict:
-    """환승 하나의 B 확률. el = (환승역 예정도착 − 그 열차 시발역 출발) 분. 시발 시각이 없으면 el = 0."""
+               dep_d: float, walk_w: float, weekend: bool, margin: float = 0.0) -> dict:
+    """환승 하나의 B 확률. el = (환승역 예정도착 − 그 열차 시발역 출발) 분. 시발 시각이 없으면 el = 0.
+    margin = 여유 선호 c(초, 기본 0): 성공 ⟺ S + Δ ≥ c → p = P(잔차 ≥ c − S − ŷ), 필요 여유 s90·s80 도 c 만큼 커진다(prob.js 와 같음)."""
     el10 = (arr_a - a_start) / 600 if a_start is not None else 0.0
     yhat = predict_delta(model, line_label(a_line, a_code), line_label(d_line, d_code), weekend, el10)
     slack = dep_d - arr_a - walk_w
     r = model["resid"]
-    return {"p": prob_of(r, slack, yhat), "yhat": yhat, "slack": slack,
-            "s90": required_slack(r, yhat, 0.9), "s80": required_slack(r, yhat, 0.8), "el10": el10}
+    return {"p": prob_of(r, slack - margin, yhat), "yhat": yhat, "slack": slack,
+            "s90": required_slack(r, yhat, 0.9) + margin, "s80": required_slack(r, yhat, 0.8) + margin, "el10": el10}
 
 
-def walk_of(distance_m, walk_sec) -> float:
-    """W = 환승거리 ÷ 1.2 (B 정의). 거리 자료가 없으면 환승 소요시간."""
-    return distance_m / WALK_SPEED if distance_m is not None and not pd.isna(distance_m) else float(walk_sec)
+def walk_of(distance_m, walk_sec, speed: float = WALK_SPEED) -> float:
+    """W = 환승거리 ÷ 걸음 속도(B 정의 1.2m/s). 거리 자료가 없으면 환승 소요시간 × (1.2 ÷ 속도) — 1.2면 소요시간 그대로."""
+    if distance_m is not None and not pd.isna(distance_m):
+        return distance_m / speed
+    return float(walk_sec) * (WALK_SPEED / speed)
 
 
 def main() -> None:

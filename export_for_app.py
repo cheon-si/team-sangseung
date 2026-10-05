@@ -3,6 +3,8 @@
     prob_table.json   조합 × 요일 유형(DAY/SAT/END)별 성공 확률, 잭나이프 구간, 시간표 여유
                       p_b = B 모형(팀 최종 채택: 다중회귀 + 잔차 경험분포, export_model_b.py) — 화면의 주 확률
                       s90_sec = B 모형으로 90% 확률이 되는 최소 시간표 여유, slack_b_sec = B 정의 여유(W = 거리 ÷ 1.2)
+                      모두 기본 설정(걸음 1.2m/s, 여유 선호 0초) 값. 앱은 설정이 다르면 distance_m·walk_sec·a_code·d_code·
+                      a_start_sec 로 행마다 다시 계산한다(web/src/route/prob.js rowProbB)
                       p_success = 2차 모형(B 채택 전 주 모형), p_first = 1차(정시 출발 가정) — 비교용으로만 남김
     delay_cdf.json    셀별 밤 균등 ECDF 격자 (−120~+1800초, 15초)
     station_alt.json  환승역 좌표·대안 + 역별 최악·중앙 성공 확률(평일, p_b 기준)
@@ -93,7 +95,8 @@ def build(train_until: str | None, model_b: dict) -> tuple[dict, dict, dict, dic
             jk = {**jk1, "ci_note": f"first_order_fallback:{jk1['ci_note']}"}
         cell = cells.set_index("dist_key").loc[key] if key in set(cells["dist_key"]) else None
         # B 모형: 행의 A·D 열차코드로 2호선 지선 판정, A 열차 시발 시각으로 경과운행시간
-        b = mb.transfer_b(model_b, r["from_line"], r["a_code"], starts[r["tt_tag"]].get((r["from_line"], r["a_code"])),
+        a_start = starts[r["tt_tag"]].get((r["from_line"], r["a_code"]))
+        b = mb.transfer_b(model_b, r["from_line"], r["a_code"], a_start,
                           r["a_arr_sec"], r["to_line"], r["d_code"], r["d_dep_sec"],
                           mb.walk_of(r["distance_m"], r["walk_sec"]), r["day_type"] != "weekday")
         rows.append({k: clean(v) for k, v in {
@@ -111,6 +114,8 @@ def build(train_until: str | None, model_b: dict) -> tuple[dict, dict, dict, dic
             "a_code": r["a_code"], "d_code": r["d_code"],
             "p_b": b["p"], "s90_sec": round(b["s90"], 1), "slack_b_sec": round(b["slack"], 1),
             "yhat_b": round(b["yhat"], 1), "el_min": round(b["el10"] * 10, 1),
+            # 앱이 걸음 속도·여유 선호를 바꿔 p_b 를 다시 계산할 때 쓰는 A 열차 시발 출발 초(el_min 은 반올림값이라 대신 쓴다)
+            "a_start_sec": a_start,
             "dep_fallback": "/".join(deps["_fallback"].get((r["to_line"], r["day_type"]), ())) or None,
             "arr_fallback": ("/".join(last_a["_fallback"].get((r["from_line"], r["day_type"]), ())) or None)
                             if r["from_line"] in c.LASTK_A_LINES else None,

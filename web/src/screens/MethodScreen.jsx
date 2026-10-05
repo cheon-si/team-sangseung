@@ -28,7 +28,7 @@ export default function MethodScreen({ onBack }) {
 }
 
 function Cards({ f }) {
-  const { data: d, judge: j, model: m, validation: v, findings: k } = f;
+  const { data: d, judge: j, model: m, validation: v, findings: k, sensitivity: sn } = f;
   return (
     <main className="mx-auto max-w-3xl px-4 pb-20">
       <h2 className="mt-5 text-[22px] leading-snug font-bold tracking-[-0.01em]">
@@ -49,6 +49,13 @@ function Cards({ f }) {
         <Card n={2} title="성공 판정" stat="막차 실측 출발" statSub="막차가 실제로 떠난 시각 기준">
           표준 걸음(1.2m/s)으로 걸었을 때 막차가 <b>실제로 떠나기 전</b>에 닿으면 성공이에요. 막차 도착 시각으로 판정하면 서 있는 막차를 놓친
           것으로 봐서 성공률을 <b>{j.arrival_gap_pp}%p</b> 낮게 봐요({j.success_departure_pct}% vs {j.success_arrival_pct}%).
+          {sn && (
+            <span className="mt-2 block text-muted">
+              걸음 속도·여유를 바꾸면 결과가 달라져요. 시간표 여유 0초 근처에서 갈리는 환승이 많아, 여유를 <b className="text-text">60초</b> 두면
+              평일 위험 연결이 <b className="text-text">{sn.margin60_risky_from_pct}%→{sn.margin60_risky_to_pct}%</b>로 늘어요(B 보고서 12장). 「내 역」에서 내
+              걸음에 맞출 수 있어요.
+            </span>
+          )}
         </Card>
 
         <Card n={3} title="모형" stat="다중회귀 + 과거 오차 분포" statSub={`설명력 R² ${m.r2}`}>

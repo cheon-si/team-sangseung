@@ -28,6 +28,22 @@ export const DEMO_PRESETS = [
 
 export const presetQuery = (p) => new URLSearchParams({ from: p.from, home: p.home, t: p.t, day: p.day }).toString();
 
+// 걸음 속도·여유 선호(B 보고서 12·13장: 걸음 1.0~1.4m/s, 마진 30·60초에서 판정이 크게 바뀌어 사용자가 고른다).
+// 걸음 속도는 환승 도보 W = 환승거리 ÷ 속도로 경로 탐색(환승 가능 여부)과 확률에 같이 쓴다.
+// 여유는 "막차가 떠나기 c초 전에는 승강장에 있고 싶다"는 뜻: 성공 ⟺ 시간표 여유 + 지연 차이 ≥ c.
+// id 는 시연 URL 쿼리 값(&walk=slow|normal|fast&margin=0|30|60). 기본은 normal · 0.
+export const WALK_OPTIONS = [
+  { id: "slow", speed: 1.0, label: "느림", short: "1.0m/s", desc: "1.0m/s · 짐이 많거나 천천히 걷는 편" },
+  { id: "normal", speed: 1.2, label: "보통", short: "1.2m/s", desc: "1.2m/s · 서울교통공사 환승시간 기준" },
+  { id: "fast", speed: 1.4, label: "빠름", short: "1.4m/s", desc: "1.4m/s · 빠르게 걷는 편" },
+];
+export const MARGIN_OPTIONS = [
+  { id: "0", sec: 0, label: "보통", short: "+0초", desc: "막차 출발 직전에 닿아도 성공으로 봐요" },
+  { id: "30", sec: 30, label: "여유 있게", short: "+30초", desc: "막차가 떠나기 30초 전에는 승강장에 있어야 성공" },
+  { id: "60", sec: 60, label: "넉넉하게", short: "+60초", desc: "막차가 떠나기 1분 전에는 승강장에 있어야 성공" },
+];
+export const DEFAULT_PACE = { walk: "normal", margin: "0" };
+
 export const DAY_TYPES = [
   { tag: "DAY", label: "평일" },
   { tag: "SAT", label: "토요일" },

@@ -2,6 +2,8 @@
 
 실행:  python check_route.py              (요일 태그별 무작위 300쌍, seed 20261004)
        python check_route.py --pairs 50   (빠르게)
+       python check_route.py --walk-speed 1.0 --margin 60   (걸음 속도·여유 선호를 바꿔 엔진 옵션 { walkSpeed, marginSec } 대조.
+                                          prob_table p_b 대조 [1]·B 확률표 [7]은 기본 설정 값이라 이때는 엔진 = Python 만 본다)
 흐름:  ① web/public/data JSON으로 Python 기준값 계산
        ② 같은 질의를 node web/scripts/route_check.mjs 에 넘겨 JS 엔진 결과(JSON)를 받음
        ③ 항목별 일치율·|Δ| 분포·불일치 사례 출력. 상세는 output/route_check/report.json
@@ -19,6 +21,7 @@
 import argparse
 import bisect
 import json
+import math
 import random
 import subprocess
 import sys
@@ -45,6 +48,7 @@ TOL_PRE = 0.02           # B 채택 전 모형 p_success 대조 허용 오차(ro
 B_TABLE = mb.B_DIR / "막차환승_성공확률표_v3.1.csv"
 INF = 10 ** 9
 SANITY = [("강남", "천호"), ("홍대입구", "노원"), ("서울역", "잠실"), ("사당", "수유")]
+BASE_SPEED = mb.WALK_SPEED   # 1.2m/s. 환승 자료 walk_sec = round(거리 ÷ 1.2)
 
 
 def hms(sec) -> str:
@@ -61,11 +65,21 @@ def load_json(name: str) -> dict:
 
 # ── 1) 데이터: 노드·환승, 연결 목록, 지연 분포 ───────────────────
 
-def load_network() -> dict:
-    """walk[n] = {m: 도보 초}: 노드 n에서 내린 뒤 노드 m의 열차를 탈 때까지 걸리는 시간.
+def walk_for(distance_m, walk_sec: int, speed: float) -> int:
+    """걸음 속도 speed 의 탐색용 환승 도보(정수 초) = round(거리 ÷ 속도), 거리가 없으면 round(walk_sec × 1.2 ÷ 속도).
+    JS Math.round 와 같게 반올림(0.5 올림). 1.2m/s 면 walk_sec 그대로(network.js walkSecFor)."""
+    if speed == BASE_SPEED:
+        return walk_sec
+    x = distance_m / speed if distance_m is not None and not pd.isna(distance_m) else walk_sec * (BASE_SPEED / speed)
+    return math.floor(x + 0.5)
+
+
+def load_network(speed: float = BASE_SPEED) -> dict:
+    """walk[n] = {m: 도보 초}: 노드 n에서 내린 뒤 노드 m의 열차를 탈 때까지 걸리는 시간(걸음 속도 speed 기준).
     자기 자신(n→n)은 같은 노드의 다른 열차(0초, same_line 자기 환승 행이 있으면 그 값). 같은 (from, to)가 여럿이면 최소.
     dist[n][m] = 그 최소 도보 행의 환승거리(동률이면 먼저 나온 행, 없으면 None). 자기 자신은 자기 환승 행이 없으면 0.
-    B 모형 걸음 시간 W = 거리 ÷ 1.2."""
+    어느 행을 쓸지는 1.2m/s 도보(walk_sec)로 고르고, 그 행의 도보를 속도에 맞춰 바꾼다(엔진 netForSpeed 와 같음).
+    B 모형 걸음 시간 W = 거리 ÷ 속도."""
     net = load_json("network")
     walk = {i: {} for i in range(len(net["nodes"]))}
     dist = {i: {} for i in range(len(net["nodes"]))}
@@ -75,10 +89,19 @@ def load_network() -> dict:
             w[t["to"]] = t["walk_sec"]
             dist[t["from"]][t["to"]] = t.get("distance_m")
     for i, w in walk.items():
+        for m in w:
+            w[m] = walk_for(dist[i][m], w[m], speed)
         if i not in w:
             w[i], dist[i][i] = 0, 0
-    return {"nodes": net["nodes"], "walk": walk, "dist": dist,
+    return {"nodes": net["nodes"], "walk": walk, "dist": dist, "speed": speed,
             "station_nodes": {s["id"]: s["nodes"] for s in net["stations"]}}
+
+
+def walk_w(net: dict, a_node: int, d_node: int, w: int) -> float:
+    """B 모형 W(초, 소수 그대로) = 환승거리 ÷ 속도. 거리가 없으면 그 속도의 탐색 도보 w(엔진 evaluateJourney 와 같음).
+    1.2m/s 면 예전 mb.walk_of(거리, w) 와 같다."""
+    d = net["dist"][a_node].get(d_node)
+    return d / net["speed"] if d is not None else float(w)
 
 
 def load_timetable(tag: str) -> dict:
@@ -217,7 +240,7 @@ def pick_d(dists: dict, line: str, day_type: str, flags: int):
 def transfer_b(ctx: dict, tag: str, ta: dict, a_stop, td: dict, d_stop, walk_w: float) -> dict:
     """B 모형 환승 확률(export_model_b.transfer_b). 정차의 시각·열차코드·시발 시각으로 계산한다."""
     return mb.transfer_b(ctx["model"], ta["line"], ta["code"], ta.get("start"), stop_time(a_stop, "arr"),
-                         td["line"], td["code"], stop_time(d_stop, "dep"), walk_w, tag != "DAY")
+                         td["line"], td["code"], stop_time(d_stop, "dep"), walk_w, tag != "DAY", ctx["margin"])
 
 
 def transfer_p(a_dist, d_dist, b: float) -> float:
@@ -250,7 +273,7 @@ def journey_transfers(ctx: dict, tag: str, rides: list) -> list:
             tr.update(buffer_sec=None, p=None)
         else:
             b = dep_d - arr_a - w
-            bm = transfer_b(ctx, tag, ta, a, td, d, mb.walk_of(net["dist"][a[0]].get(d[0]), w))
+            bm = transfer_b(ctx, tag, ta, a, td, d, walk_w(net, a[0], d[0], w))
             tr.update(buffer_sec=b, p=bm["p"], s90=bm["s90"], slack=bm["slack"])
         out.append(tr)
     return out
@@ -336,14 +359,17 @@ def table_queries(ctx: dict) -> tuple[list, list]:
         tag = r["tt_tag"]
         a = find_stop(ctx, tag, r["from_line"], r["in_dir"], r["station"], "arr", r["arrive_sec"])
         d = find_stop(ctx, tag, r["to_line"], r["out_dir"], r["to_station"], "dep", r["depart_sec"])
-        q = {"row": r, "tag": tag, "a": a, "d": d, "B": r["buffer_sec"], "dropped": []}
+        q = {"row": r, "row_index": len(tq), "tag": tag, "a": a, "d": d, "B": r["buffer_sec"], "dropped": []}
         if a is None:
             q["dropped"] += dropped_train(ctx, tag, r["from_line"], r["in_dir"], r["station"], "arr", r["arrive_sec"])
         if d is None:
             q["dropped"] += dropped_train(ctx, tag, r["to_line"], r["out_dir"], r["to_station"], "dep", r["depart_sec"])
         tq.append(q)
-        q["W"] = mb.walk_of(r["distance_m"], r["walk_sec"])
-        if a is None or d is None or r["buffer_sec"] < 0 or a[1] == 0:
+        speed = ctx["net"]["speed"]
+        q["W"] = mb.walk_of(r["distance_m"], r["walk_sec"], speed)
+        # 막차 조합 경로 질의는 그 걸음 속도로도 시간표상 갈아탈 수 있는(여유 ≥ 0) 행만(1.2m/s 면 buffer_sec 그대로)
+        buffer = r["depart_sec"] - r["arrive_sec"] - walk_for(r["distance_m"], r["walk_sec"], speed)
+        if a is None or d is None or buffer < 0 or a[1] == 0:
             continue
         trips, nodes = ctx["tt"][tag]["trips"], ctx["net"]["nodes"]
         prev, nxt = trips[a[0]]["stops"][a[1] - 1], trips[d[0]]["stops"][d[1] + 1]
@@ -362,8 +388,9 @@ def run_engine(ctx: dict, tq: list, plans: list) -> dict:
         return [tr["line"], tr["code"], ti_i[1]]
 
     payload = {
+        "options": {"walkSpeed": ctx["net"]["speed"], "marginSec": ctx["margin"]},
         "transfers": [None if q["a"] is None or q["d"] is None else
-                      {"tag": q["tag"], "W": q["W"], "B": q.get("B"),
+                      {"tag": q["tag"], "W": q["W"], "B": q.get("B"), "row": q.get("row_index"),
                        "a": stop_ref(q["tag"], q["a"]), "d": stop_ref(q["tag"], q["d"])}
                       for q in tq],
         "plans": [{k: q[k] for k in ("id", "tag", "origin", "home", "nowSec")} for q in plans],
@@ -412,8 +439,20 @@ def check_table(ctx: dict, tq: list, eng: list, fails: list, report: dict) -> No
         r = q["row"]
         res_b.append({"combo": f"{q['tag']} {r['combo_id']}", "p_engine": e["p"], "p_python": bm["p"],
                       "s90_engine": e["s90"], "s90_python": bm["s90"], "p_b": r["p_b"], "s90_sec": r["s90_sec"],
-                      "p_success": r["p_success"]})
+                      "p_success": r["p_success"], "p_row": e["p_row"], "s90_row": e["s90_row"]})
     d_same = [max(abs(x["p_engine"] - x["p_python"]), abs(x["s90_engine"] - x["s90_python"])) for x in res_b]
+    # 위험한 환승역 화면의 행 재계산(rowProbB: 행의 거리·도보·열차코드·a_start_sec 만으로)도 같은 값이어야 한다
+    d_row = [max(abs(x["p_row"] - x["p_python"]), abs(x["s90_row"] - x["s90_python"])) for x in res_b]
+    print(f"  행 재계산(rowProbB, 위험한 환승역 화면) vs Python 최대 |Δp|·|ΔS90| {max(d_row):.2e}")
+    if max(d_row) > TOL_SAME:
+        fails.append("환승 확률(B): 행 재계산(rowProbB) ≠ Python")
+    if not ctx["default"]:
+        print(f"  {len(res_b)}행: 엔진 vs Python 최대 |Δp|·|ΔS90| {max(d_same):.2e}"
+              f" (걸음 {ctx['net']['speed']}m/s · 여유 {ctx['margin']:g}초 — prob_table p_b 는 기본 설정 값이라 대조하지 않음)")
+        if max(d_same) > TOL_SAME:
+            fails.append("환승 확률(B): 엔진 ≠ Python")
+        report["table_b"] = res_b
+        return
     d_tab = [abs(x["p_engine"] - x["p_b"]) for x in res_b]
     d_s90 = [abs(x["s90_engine"] - x["s90_sec"]) for x in res_b]
     d_old = [x["p_engine"] - x["p_success"] for x in res_b]
@@ -734,7 +773,7 @@ def b_table_queries(ctx: dict) -> list:
             if w is None:
                 q["why"] = "환승 자료 없음"
             else:
-                q.update(a=a, d=d, W=mb.walk_of(net["dist"][an].get(dn), w))
+                q.update(a=a, d=d, W=walk_w(net, an, dn, w))
         out.append(q)
     return out
 
@@ -742,6 +781,9 @@ def b_table_queries(ctx: dict) -> list:
 def check_b_table(ctx: dict, bq: list, eng_b: list, report: dict) -> None:
     """B 확률표(평일)와 같은 연결의 엔진 p 대조, 차이 원인(W·S·ŷ), 보고서 11.1 필요 여유·11.2 마지막 연결 재현."""
     if not bq:
+        return
+    if not ctx["default"]:
+        print("\n[7] B 확률표 대조 — 기본 설정(1.2m/s · 여유 0초) 기준 표라 건너뜀")
         return
     print(f"\n[7] B 확률표 대조 — {B_TABLE.name} 평일 {len(bq)}행")
     model, tt = ctx["model"], ctx["tt"]["DAY"]
@@ -807,10 +849,15 @@ def main() -> None:
     ap.add_argument("--pairs", type=int, default=300, help="요일 태그별 무작위 질의 수")
     ap.add_argument("--prob-pairs", type=int, default=100, help="경로 확률을 대조할 질의 수")
     ap.add_argument("--seed", type=int, default=20261004)
+    ap.add_argument("--walk-speed", type=float, default=BASE_SPEED, help="걸음 속도 m/s (앱 선택지 1.0·1.2·1.4)")
+    ap.add_argument("--margin", type=float, default=0.0, help="여유 선호 초 (앱 선택지 0·30·60)")
     args = ap.parse_args()
 
     t0 = time.time()
-    ctx = {"net": load_network(), "dists": load_dists(), "model": load_json("model_b"), "memo": {}}
+    ctx = {"net": load_network(args.walk_speed), "dists": load_dists(), "model": load_json("model_b"), "memo": {},
+           "margin": args.margin, "default": args.walk_speed == BASE_SPEED and args.margin == 0}
+    if not ctx["default"]:
+        print(f"걸음 속도 {args.walk_speed}m/s · 여유 선호 {args.margin:g}초로 대조")
     ctx["tt"] = {tag: load_timetable(tag) for tag in TAGS}
     ctx["sidx"] = {tag: stop_index(ctx["tt"][tag]) for tag in TAGS}
     plans = make_plan_queries(ctx, args.pairs, args.seed)

@@ -41,7 +41,7 @@ export default function TransferSheet({ data, transfer: t }) {
         {cdf?.meta?.provisional ? " · 잠정" : ""}
       </p>
 
-      <ModelBNote s90={t.s90} slack={t.slack_sec} toLine={t.to_line} />
+      <ModelBNote s90={t.s90} slack={t.slack_sec} toLine={t.to_line} margin={t.margin_sec} />
 
       {t.critical && (
         <div className="mt-3 flex items-center gap-2 rounded-2xl bg-danger/10 px-3 py-2.5 text-[14px] font-semibold text-danger-ink">

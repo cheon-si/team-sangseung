@@ -1,6 +1,6 @@
 // 경로 엔진 4/4: 공개 API. 데이터 읽기, 운영일 판정, 가까운 역, 귀가 계획(planTrip). 계약 3장 공개 API.
 
-import { buildNetwork, buildTimetable, lowerBound } from "./network.js";
+import { BASE_WALK_SPEED, buildNetwork, buildTimetable, lowerBound, netForSpeed } from "./network.js";
 import { journeyLegs, journeySignature, searchJourney } from "./csa.js";
 import { buildDists, buildModelB, buildProbIndex, evaluateJourney } from "./prob.js";
 
@@ -129,9 +129,12 @@ const emptyResult = (status) => ({ status, best: null, options: [], leave_by: { 
  *           (늦게 떠나 일찍 도착하는 안이 있는 경우 등)도 뺀 뒤 출발 시각 오름차순으로 마지막 12개.
  *           best 는 지배당하더라도 항상 넣는다(화면의 출발 시각 띠에서 지금 보고 있는 여정이 선택되도록).
  * leave_by.safe = p_home ≥ 0.8 인 가장 늦은 출발, leave_by.last = p_home > 0 인 가장 늦은 출발
+ * walkSpeed = 걸음 속도(m/s, 기본 1.2), marginSec = 여유 선호 c(초, 기본 0). 기본값이면 예전 결과와 완전히 같다.
+ *   걸음 속도는 탐색(환승 가능 여부)과 확률(W)에 같이 쓴다: 느리면 시간표상 못 타는 환승이 생긴다.
+ *   여유 선호는 확률(성공 ⟺ S + Δ ≥ c)에만 쓴다. 탐색은 시간표상 걸어서 닿는지만 본다.
  */
-export function planTrip(data, { origin, home, tag, nowSec }) {
-  const net = data.network;
+export function planTrip(data, { origin, home, tag, nowSec, walkSpeed = BASE_WALK_SPEED, marginSec = 0 }) {
+  const net = netForSpeed(data.network, walkSpeed);
   const o = net.stationById.get(origin);
   const h = net.stationById.get(home);
   if (!o || !h || !TAGS.includes(tag) || !data.rawTrips?.[tag]) return emptyResult("unsupported");
@@ -149,6 +152,8 @@ export function planTrip(data, { origin, home, tag, nowSec }) {
     probIndex: data.probIndex,
     homeNodes: h.nodes,
     memo: new Map(), // 놓친 뒤 재탐색 결과. 이번 planTrip 안에서만 쓴다
+    walkSpeed,
+    marginSec,
   };
 
   const bestRes = searchJourney(net, tt, { startNodes: o.nodes, startSec: t0, homeNodes: h.nodes });

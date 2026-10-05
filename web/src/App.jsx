@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { presetQuery } from "./config";
 import HomeSetup from "./screens/HomeSetup";
 import MainScreen, { TABBAR_BOTTOM } from "./screens/MainScreen";
-import { loadSaved, readPreset, saveValue } from "./settings";
+import { initialPace, loadSaved, readPreset, savePace, saveValue } from "./settings";
 import { stationById, useRouteData } from "./usePlan";
 
 // 보조 화면(위험한 환승역 · 어떻게 계산했나요)은 열 때만 불러온다(위험한 환승역은 그래프 라이브러리가 무겁다)
@@ -20,6 +20,12 @@ export default function App() {
   const route = useRouteData();
   const [home, setHome] = useState(() => preset.home || loadSaved("home"));
   const [view, setView] = useState(viewOfHash);
+  // 걸음 속도·여유 선호: 시연 URL(&walk=&margin=) → 저장값 → 기본. 메인·위험한 환승역 화면이 같이 쓴다
+  const [pace, setPace] = useState(initialPace);
+  const changePace = (next) => {
+    setPace(next);
+    savePace(next);
+  };
   const openedInApp = useRef(0); // 앱 안에서 연 보조 화면 수(1이면 뒤로 가기로 닫는다)
 
   useEffect(() => {
@@ -78,7 +84,11 @@ export default function App() {
       style={{ bottom: withTabs && !desktop ? TABBAR_BOTTOM : 0 }}
     >
       <Suspense fallback={<p className="p-8 text-muted">불러오는 중…</p>}>
-        {view === "risk" ? <RiskScreen onBack={closeRisk} onOpenMethod={openMethod} /> : <MethodScreen onBack={closeRisk} />}
+        {view === "risk" ? (
+          <RiskScreen onBack={closeRisk} onOpenMethod={openMethod} pace={pace} />
+        ) : (
+          <MethodScreen onBack={closeRisk} />
+        )}
       </Suspense>
     </div>
   );
@@ -93,7 +103,7 @@ export default function App() {
         key={preset.key}
         data={route.data} raw={route.raw} home={home} onChangeHome={pickHome} preset={preset}
         onOpenRisk={openRisk} onCloseRisk={closeRisk} riskOpen={view === "risk"} onPreset={applyPreset}
-        onOpenMethod={openMethod} methodOpen={view === "method"}
+        onOpenMethod={openMethod} methodOpen={view === "method"} pace={pace} onChangePace={changePace}
       />
     );
   }

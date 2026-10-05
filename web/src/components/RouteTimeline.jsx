@@ -161,7 +161,7 @@ function TransferRow({ data, transfer: t, walkSec, onClick }) {
           <span className="text-[13px] text-muted">환승 성공 확률</span>
         </div>
         <div className="mt-1.5 text-[13px] text-muted tabular-nums">시간표 여유 {signedMinText(t.slack_sec)}</div>
-        <ModelBNote s90={t.s90} slack={t.slack_sec} toLine={t.to_line} compact />
+        <ModelBNote s90={t.s90} slack={t.slack_sec} toLine={t.to_line} margin={t.margin_sec} compact />
         {t.critical ? (
           <div className="mt-2 flex items-center gap-1.5 text-[13px] font-semibold text-danger-ink">
             <Icon name="warning" className="h-4 w-4 shrink-0" strokeWidth={2.4} /> 놓치면 이 역에서 지하철로는 집에 못 가요

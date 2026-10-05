@@ -11,7 +11,8 @@ const CdfChart = lazy(() => import("./CdfChart"));
 
 // 위험한 환승역 화면의 상세(바텀시트). 막차 조합표(prob_table) 한 행을 화면 3(TransferSheet)과 같은 짜임새로 보여 준다.
 // 화면 3과 다른 점: 경로 문맥(놓친 뒤 귀가 확률 q)이 없다. 확률은 B 모형(p_b, s90_sec, slack_b_sec — export_for_app.py).
-export default function RiskDetail({ row: r, lineColor }) {
+// 걸음 속도·여유 선호가 기본이 아니면 RiskScreen 이 행 값을 다시 계산해 넘긴다(usePlan rowsForPace). margin = 여유 선호(초)
+export default function RiskDetail({ row: r, lineColor, margin = 0 }) {
   const cdf = useJson("delay_cdf");
   const model = useJson("model_b");
   const [showChart, setShowChart] = useState(false);
@@ -45,7 +46,7 @@ export default function RiskDetail({ row: r, lineColor }) {
         {cdf?.meta?.provisional ? " · 잠정" : ""}
       </p>
 
-      <ModelBNote s90={r.s90_sec} slack={slack} toLine={r.to_line} />
+      <ModelBNote s90={r.s90_sec} slack={slack} toLine={r.to_line} margin={margin} />
 
       {r.buffer_sec < 0 && (
         <div className="mt-3 flex items-center gap-2 rounded-2xl bg-chip px-3 py-2.5 text-[14px] font-semibold text-brand-ink">

@@ -7,6 +7,8 @@ import RiskMap from "../components/RiskMap";
 import { DAY_TYPES } from "../config";
 import { loadJson, stationId, useJson } from "../data";
 import { hhmm, minSecText, minText, pctText, signedMinText, TONE, toneOf } from "../format";
+import { paceOptions } from "../settings";
+import { rowsForPace } from "../usePlan";
 
 const PAGE = 20; // 목록은 20개씩 더 보기
 const SURPRISE_MIN_P = 0.3; // "시간표로는 안 되는데 실제로는 되는" 환승으로 보여 줄 최소 확률
@@ -16,8 +18,10 @@ const DAY_SHORT = { DAY: "평일", SAT: "토요일", END: "휴일" };
 // 보조 화면 "위험한 환승역" (보고서·심사용). 막차 조합표(prob_table)를 위험한 순서로 훑어보는 화면.
 // 확률은 B 모형(p_b, 팀 최종 채택). B 채택 전 모형 값(p_success)은 prob_table 에 비교용으로만 남아 있다.
 // 메인 화면과 같은 밝은 테마(연하늘 배경 + 흰 카드, index.css 토큰). 요일을 고르면 지도(역별 최악 확률)·요약 수·목록이 함께 바뀐다.
-export default function RiskScreen({ onBack, onOpenMethod }) {
-  const [src, setSrc] = useState(null); // { prob, alt, network }
+// pace = 걸음 속도·여유 선호(settings.js). prob_table 의 p_b 는 기본 설정 값이라, 기본이 아니면 행마다 엔진 B 함수로 다시 계산한다
+// (확률·필요 여유·시간표 여유·도보, 느린 걸음이면 시간표상 불가가 되는 행도 생긴다). 지도 색·요약 수·정렬 모두 그 값으로.
+export default function RiskScreen({ onBack, onOpenMethod, pace }) {
+  const [src, setSrc] = useState(null); // { prob, alt, network, model }
   const [failed, setFailed] = useState(false);
   const [tag, setTag] = useState("DAY");
   const [tone, setTone] = useState(null); // 요약 타일로 거르기
@@ -27,14 +31,22 @@ export default function RiskScreen({ onBack, onOpenMethod }) {
   const [detail, setDetail] = useState(null);
 
   useEffect(() => {
-    Promise.all([loadJson("prob_table"), loadJson("station_alt"), loadJson("network")]).then(
-      ([prob, alt, network]) => setSrc({ prob, alt, network }),
+    Promise.all([loadJson("prob_table"), loadJson("station_alt"), loadJson("network"), loadJson("model_b")]).then(
+      ([prob, alt, network, model]) => setSrc({ prob, alt, network, model }),
       () => setFailed(true),
     );
   }, []);
   useEffect(() => setLimit(PAGE), [tag, tone, station, query]);
 
-  const rows = useMemo(() => (src ? src.prob.rows.filter((r) => r.tt_tag === tag && r.p_b != null) : []), [src, tag]);
+  const po = paceOptions(pace);
+  const { walkSpeed, marginSec, isDefault } = po;
+  const rows = useMemo(
+    () =>
+      src
+        ? rowsForPace(src.model, src.prob.rows.filter((r) => r.tt_tag === tag && r.p_b != null), { walkSpeed, marginSec, isDefault })
+        : [],
+    [src, tag, walkSpeed, marginSec, isDefault],
+  );
   // 시간표상 갈아탈 수 있는(여유 ≥ 0) 막차 환승을 위험한 순서로
   const feasible = useMemo(() => rows.filter((r) => r.buffer_sec >= 0).sort((a, b) => a.p_b - b.p_b), [rows]);
   // 시간표상 불가인데 갈아탈 막차가 늦게 떠나 실제로는 꽤 성공하는 환승
@@ -120,6 +132,12 @@ export default function RiskScreen({ onBack, onOpenMethod }) {
               {DAY_SHORT[tag]} 막차 환승 {feasible.length}개의 성공 확률(다중회귀 + 과거 오차 분포)이에요.
               {m?.provisional && fd && ` 평일 ${fd.weekday_nights}밤 · 주말·공휴일 ${fd.weekend_nights}밤 기준 잠정 결과.`}
             </p>
+            {!isDefault && (
+              <p className="mt-2 flex items-start gap-1.5 rounded-xl bg-gamble/10 px-3 py-2 text-[13px] leading-relaxed text-gamble-ink">
+                <Icon name="walk" className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={2.3} />
+                <span>{po.label} 기준으로 다시 계산했어요(기본: 보통 걸음 · 여유 0초).</span>
+              </p>
+            )}
 
             <div className="mt-4 grid grid-cols-3 gap-2" role="group" aria-label="판정별 개수">
               {["danger", "gamble", "safe"].map((t) => (
@@ -201,7 +219,7 @@ export default function RiskScreen({ onBack, onOpenMethod }) {
 
       {detail && (
         <Modal onClose={() => setDetail(null)} labelledBy="risk-title">
-          <RiskDetail row={detail} lineColor={lineColor} />
+          <RiskDetail row={detail} lineColor={lineColor} margin={marginSec} />
         </Modal>
       )}
     </div>

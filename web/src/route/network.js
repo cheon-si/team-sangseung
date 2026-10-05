@@ -62,6 +62,33 @@ export function buildNetwork(raw) {
   };
 }
 
+export const BASE_WALK_SPEED = 1.2; // m/s. 환승 자료 walk_sec 의 기준 걸음(walk_sec = round(거리 ÷ 1.2))
+
+// 걸음 속도 speed(m/s)일 때 탐색에 쓰는 환승 도보(정수 초): round(거리 ÷ 속도), 거리가 없으면 round(walk_sec × 1.2 ÷ 속도).
+// 1.2m/s 면 network.json 의 walk_sec 과 정확히 같다(walk_sec 이 round(거리 ÷ 1.2)로 만들어져 있음).
+export function walkSecFor(distanceM, walkSec, speed = BASE_WALK_SPEED) {
+  return Math.round(distanceM != null ? distanceM / speed : walkSec * (BASE_WALK_SPEED / speed));
+}
+
+// 걸음 속도별 탐색용 네트워크. 환승 도보 배열(sameNodeWalk·adjWalk)만 그 속도로 바꾼 얕은 복사본을 속도마다 한 번 만들어 둔다.
+// 1.2m/s(기본)면 원본을 그대로 돌려준다(기본 설정 결과가 예전과 완전히 같도록).
+export function netForSpeed(net, speed = BASE_WALK_SPEED) {
+  if (speed === BASE_WALK_SPEED) return net;
+  net.bySpeed ??= new Map();
+  if (!net.bySpeed.has(speed)) {
+    const sameNodeWalk = Int32Array.from(net.sameNodeWalk);
+    for (const [node, dist] of net.sameNodeDist) sameNodeWalk[node] = walkSecFor(dist, net.sameNodeWalk[node], speed);
+    const adjWalk = new Int32Array(net.adjWalk.length);
+    for (let from = 0; from < net.nodes.length; from++) {
+      for (let k = net.adjStart[from]; k < net.adjStart[from + 1]; k++) {
+        adjWalk[k] = walkSecFor(net.distByEdge.get(`${from}>${net.adjTo[k]}`) ?? null, net.adjWalk[k], speed);
+      }
+    }
+    net.bySpeed.set(speed, { ...net, sameNodeWalk, adjWalk, walkSpeed: speed });
+  }
+  return net.bySpeed.get(speed);
+}
+
 // 노드 from 에서 내려 노드 to 의 열차를 탈 때의 환승거리(m). 환승 자료에 거리가 없으면 null.
 // 같은 노드: 지선 환승 행이 있으면 그 거리, 없으면(같은 승강장 다른 열차) 0
 export function transferDistance(net, from, to) {

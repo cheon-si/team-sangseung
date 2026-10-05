@@ -81,21 +81,22 @@ export function useDayData(raw, tag) {
 }
 
 // ── 귀가 계획 ──
-// 같은 입력(출발역·집·요일·시각)은 다시 계산하지 않는다. 출발 시각 칩을 고르거나 요일·시각을 오갈 때 바로 나온다.
+// 같은 입력(출발역·집·요일·시각·걸음 속도·여유 선호)은 다시 계산하지 않는다. 출발 시각 칩을 고르거나 요일·시각·설정을 오갈 때 바로 나온다.
 // 21:00 전 시각은 모두 21:00 계산과 같으므로 같은 키로 묶는다.
 const planCache = new WeakMap(); // 엔진 data → Map(입력 키 → 결과)
 
-export function usePlan(data, { origin, home, tag, nowSec }) {
+// walkSpeed(m/s)·marginSec(초): 설정 화면의 걸음 속도·여유 선호(settings.js paceOptions). 기본 1.2 · 0
+export function usePlan(data, { origin, home, tag, nowSec, walkSpeed = engine.BASE_WALK_SPEED, marginSec = 0 }) {
   return useMemo(() => {
     if (!data || !origin || !home || !tag || nowSec == null) return null;
-    return planCached(data, { origin, home, tag, nowSec });
-  }, [data, origin, home, tag, nowSec]);
+    return planCached(data, { origin, home, tag, nowSec, walkSpeed, marginSec });
+  }, [data, origin, home, tag, nowSec, walkSpeed, marginSec]);
 }
 
 function planCached(data, input) {
   let cache = planCache.get(data);
   if (!cache) planCache.set(data, (cache = new Map()));
-  const key = [input.origin, input.home, input.tag, Math.max(input.nowSec, NIGHT_START)].join("|");
+  const key = [input.origin, input.home, input.tag, Math.max(input.nowSec, NIGHT_START), input.walkSpeed, input.marginSec].join("|");
   if (cache.has(key)) return cache.get(key);
 
   const t0 = performance.now();
@@ -118,6 +119,15 @@ function planCached(data, input) {
   cache.set(key, result);
   if (cache.size > PLAN_CACHE_MAX) cache.delete(cache.keys().next().value);
   return result;
+}
+
+// 위험한 환승역 화면: 막차 조합표 행(p_b 등은 기본 설정 값)을 걸음 속도·여유 선호로 다시 계산한 행 목록.
+// 기본 설정이면 원래 행 그대로. 다시 계산하면 p_b·s90_sec·slack_b_sec·buffer_sec·walk_sec 를 덮어쓴다(엔진 rowProbB, 경로와 같은 규칙)
+export function rowsForPace(rawModel, rows, { walkSpeed, marginSec, isDefault }) {
+  if (isDefault || !rawModel) return rows;
+  const model = engine.buildModelB(rawModel);
+  if (!model) return rows;
+  return rows.map((r) => (r.p_b == null ? r : { ...r, ...engine.rowProbB(model, r, { walkSpeed, marginSec }) }));
 }
 
 // 그 요일 시간표의 마지막 열차 출발 시각(운영일 초). 이 시각이 지나면 "오늘 운행 종료"로 본다.

@@ -1,8 +1,9 @@
 // 경로 엔진 3/4: 환승 성공 확률과 경로 귀가 확률.
 //   환승 하나(B 모형, 팀 최종 채택 — export_model_b.py · model_b.json):
-//     Δ = 막차 출발 지연 − 도착열차 도착 지연, 성공 ⟺ S + Δ ≥ 0, S = dep_D − arr_A − W, W = 환승거리 ÷ 1.2m/s
+//     Δ = 막차 출발 지연 − 도착열차 도착 지연, 성공 ⟺ S + Δ ≥ c, S = dep_D − arr_A − W, W = 환승거리 ÷ 걸음 속도(기본 1.2m/s)
+//     c = 여유 선호(마진, 기본 0초). B 보고서 12장: 걸음 속도·마진에 따라 판정이 크게 바뀌어 사용자가 고른다
 //     ŷ = 절편 + F(도착노선) + L(갈아탈 노선) + 주말·공휴일 + el10 × (경과운행시간 분 / 10),  A_status = 실측(0)
-//     p = 1 − #(잔차 < −S − ŷ) / n   (잔차 경험분포, 노선 공통)
+//     p = 1 − #(잔차 < c − S − ŷ) / n   (잔차 경험분포, 노선 공통)
 //   경로: P = Π p_k + Σ_k (Π_{j<k} p_j)(1 − p_k) · q_k,  q_k = 놓친 시점에서 다시 찾은 최선 경로의 P (깊이 2까지)
 //
 //   B 채택 전 모형(2차 합성곱, 계약 2장 · Python validate.conv_matrix): p = Σ_{δ∈D} w_δ · F_A(B + δ).
@@ -10,7 +11,7 @@
 //   앱에서는 확률에 쓰지 않는다(model_b 가 없을 때만 대체로 쓰고, 화면의 "지연 분포 보기" 참고 그래프 키만 pickArrDist 로 고른다).
 
 import { searchJourney } from "./csa.js";
-import { lowerBound, transferDistance } from "./network.js";
+import { BASE_WALK_SPEED, lowerBound, transferDistance, walkSecFor } from "./network.js";
 
 export const MAX_DEPTH = 2; // 놓친 뒤 재탐색 깊이. 이 깊이의 경로는 q = 0(보수적)
 
@@ -149,7 +150,7 @@ export function transferProb(aDist, dDist, buffer) {
 
 // ── B 모형 ────────────────────────────────────────────────────
 
-export const WALK_SPEED_B = 1.2; // m/s. B 정의 W = 환승거리 ÷ 1.2
+export const WALK_SPEED_B = BASE_WALK_SPEED; // m/s. B 정의 W = 환승거리 ÷ 1.2 (기본 걸음 속도)
 const WEEKEND_KEY = "daytype[주말·공휴일]";
 
 // model_b.json → { coef, resid(정렬 Float64Array), n, meta }. 없거나 비었으면 null
@@ -187,27 +188,29 @@ export function requiredSlackB(model, yhat, target) {
   return -model.resid[k] - yhat;
 }
 
-// W(초): 환승거리 ÷ 1.2. 거리 자료가 없으면 환승 소요시간
-export const walkB = (distanceM, walkSec) => (distanceM != null ? distanceM / WALK_SPEED_B : walkSec);
+// W(초): 환승거리 ÷ 걸음 속도. 거리 자료가 없으면 환승 소요시간 × (1.2 ÷ 속도) — 1.2m/s 면 환승 소요시간 그대로
+export const walkB = (distanceM, walkSec, speed = WALK_SPEED_B) =>
+  distanceM != null ? distanceM / speed : walkSec * (WALK_SPEED_B / speed);
 
 /**
  * 환승 하나의 B 확률과 근거.
- * 입력: 타고 온 열차(aLine, aCode, aStart = 시발역 출발 초), 갈아탈 열차(dLine, dCode), arrA, depD, walkW(초), dayType.
+ * 입력: 타고 온 열차(aLine, aCode, aStart = 시발역 출발 초), 갈아탈 열차(dLine, dCode), arrA, depD, walkW(초), dayType,
+ *       marginSec = 여유 선호 c(초, 기본 0). 성공 ⟺ S + Δ ≥ c 이므로 p = P(잔차 ≥ c − S − ŷ), 필요 여유 s90·s80 도 c 만큼 커진다.
  * el10 = (arrA − aStart) / 600. 시발 시각이 없으면 el10 = 0(구버전 trips 데이터).
- * 출력: p, yhat(예측 Δ), slack(S), s90·s80(그 확률이 되는 최소 S), el10, 범주 이름
+ * 출력: p, yhat(예측 Δ), slack(S, 마진을 빼지 않은 시간표 여유), s90·s80(그 확률이 되는 최소 S), el10, 범주 이름
  */
-export function transferProbB(model, { aLine, aCode, aStart, arrA, dLine, dCode, depD, walkW, dayType }) {
+export function transferProbB(model, { aLine, aCode, aStart, arrA, dLine, dCode, depD, walkW, dayType, marginSec = 0 }) {
   const el10 = aStart != null ? (arrA - aStart) / 600 : 0;
   const fLabel = lineLabelB(aLine, aCode);
   const lLabel = lineLabelB(dLine, dCode);
   const yhat = predictDeltaB(model, fLabel, lLabel, dayType === "weekend", el10);
   const slack = depD - arrA - walkW;
   return {
-    p: probB(model, slack, yhat),
+    p: probB(model, slack - marginSec, yhat),
     yhat,
     slack,
-    s90: requiredSlackB(model, yhat, 0.9),
-    s80: requiredSlackB(model, yhat, 0.8),
+    s90: requiredSlackB(model, yhat, 0.9) + marginSec,
+    s80: requiredSlackB(model, yhat, 0.8) + marginSec,
     el10,
     fLabel,
     lLabel,
@@ -223,6 +226,25 @@ export function routeProbability(ps, qs) {
     prefix *= ps[k];
   }
   return prefix + missed;
+}
+
+/**
+ * 막차 조합표(prob_table.json) 한 행을 걸음 속도·여유 선호로 다시 계산한다(위험한 환승역 화면, 설정이 기본이 아닐 때).
+ * 행의 p_b·s90_sec·slack_b_sec 는 기본 설정(1.2m/s, 마진 0) 값이다. 엔진 경로 계산과 같은 규칙:
+ *   walk_sec(시간표 여유·탐색용 정수 초) = walkSecFor(거리, walk_sec, 속도), buffer_sec = 출발 − 도착 − walk_sec,
+ *   W(B 모형) = walkB(거리, walk_sec, 속도). 경과운행시간은 a_start_sec(없으면 el_min, 0.1분 반올림값)으로.
+ * 반환: { p_b, s90_sec, slack_b_sec, buffer_sec, walk_sec } (행에 덮어써서 쓴다)
+ */
+export function rowProbB(model, r, { walkSpeed = WALK_SPEED_B, marginSec = 0 } = {}) {
+  const dist = r.distance_m ?? null;
+  const aStart = r.a_start_sec ?? (r.el_min != null ? r.arrive_sec - r.el_min * 60 : null);
+  const b = transferProbB(model, {
+    aLine: r.from_line, aCode: r.a_code, aStart, arrA: r.arrive_sec,
+    dLine: r.to_line, dCode: r.d_code, depD: r.depart_sec,
+    walkW: walkB(dist, r.walk_sec, walkSpeed), dayType: r.day_type, marginSec,
+  });
+  const walk = walkSecFor(dist, r.walk_sec, walkSpeed);
+  return { p_b: b.p, s90_sec: b.s90, slack_b_sec: b.slack, buffer_sec: r.depart_sec - r.arrive_sec - walk, walk_sec: walk };
 }
 
 // prob_table.json 행을 (태그, 역, 노선·방향) 키로 묶는다. 경로의 환승이 막차 조합이면 그 행(p_b·s90_sec 등)을 붙인다
@@ -247,7 +269,8 @@ function matchProbRow(ctx, aNode, dNode, tripA, tripD, arrA, depD) {
 
 /**
  * 탑승 구간 목록의 귀가 확률과 환승별 상세.
- * ctx = { net, tt, dists, modelB, dayType, tag, homeNodes, probIndex, memo(Map) } — 한 번의 planTrip 동안 공유
+ * ctx = { net, tt, dists, modelB, dayType, tag, homeNodes, probIndex, memo(Map), walkSpeed, marginSec } — 한 번의 planTrip 동안 공유.
+ *   net 은 그 걸음 속도의 탐색용 네트워크(netForSpeed)라 segments[k].walk 가 이미 그 속도의 도보다(탐색과 확률이 같은 걸음).
  * depth = 재탐색 깊이(최상위 경로 0). depth ≥ MAX_DEPTH 이면 q = 0.
  */
 export function evaluateJourney(ctx, segments, depth = 0) {
@@ -269,11 +292,13 @@ export function evaluateJourney(ctx, segments, depth = 0) {
     let b = null;
     let p;
     if (ctx.modelB) {
-      // B 모형: W = 환승거리 ÷ 1.2 (탐색·결정적 환승 판단은 지금처럼 환승 소요시간 walk 로 한다)
-      const walkW = walkB(transferDistance(net, aNode, dNode), walk);
+      // B 모형: W = 환승거리 ÷ 걸음 속도(소수 초 그대로). 거리가 없으면 탐색에 쓴 그 속도의 도보 walk.
+      // 탐색·결정적 환승 판단은 같은 속도의 정수 초 도보 walk(= round(거리 ÷ 속도))로 한다
+      const dist = transferDistance(net, aNode, dNode);
+      const walkW = dist != null ? dist / (ctx.walkSpeed ?? WALK_SPEED_B) : walk;
       b = transferProbB(ctx.modelB, {
         aLine: tripA.line, aCode: tripA.code, aStart: tripA.start ?? null, arrA,
-        dLine: tripD.line, dCode: tripD.code, depD, walkW, dayType,
+        dLine: tripD.line, dCode: tripD.code, depD, walkW, dayType, marginSec: ctx.marginSec ?? 0,
       });
       p = b.p;
     } else {
@@ -297,8 +322,10 @@ export function evaluateJourney(ctx, segments, depth = 0) {
       q: 0,
       critical: false,
       model: b ? "B" : "pre_b",
-      // B 근거(화면 문구용): S(B 정의 시간표 여유, W = 거리 ÷ 1.2), ŷ, 90%·80% 확률이 되는 최소 S, 경과운행시간(분)
+      // B 근거(화면 문구용): S(B 정의 시간표 여유, W = 거리 ÷ 걸음 속도), ŷ, 90%·80% 확률이 되는 최소 S(여유 선호 c 포함),
+      // 경과운행시간(분), 여유 선호 c(초)
       slack_sec: b ? b.slack : buffer,
+      margin_sec: ctx.marginSec ?? 0,
       yhat: b ? b.yhat : null,
       s90: b ? b.s90 : null,
       s80: b ? b.s80 : null,

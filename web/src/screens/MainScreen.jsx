@@ -4,6 +4,7 @@ import DepartureStrip from "../components/DepartureStrip";
 import Icon from "../components/Icon";
 import MissedAlt from "../components/MissedAlt";
 import Modal from "../components/Modal";
+import PaceSettings, { PaceChip } from "../components/PaceSettings";
 import PresetList from "../components/PresetList";
 import RouteMap from "../components/RouteMap";
 import RouteTimeline from "../components/RouteTimeline";
@@ -14,7 +15,7 @@ import TransferSheet from "../components/TransferSheet";
 import { THRESHOLDS } from "../config";
 import { useJson } from "../data";
 import { hhmm, pctText, shownMinutes, TONE, toneOf, untilText, withYeok } from "../format";
-import { loadSaved, saveValue } from "../settings";
+import { loadSaved, paceOptions, saveValue } from "../settings";
 import { nearestId, nearestStations, serviceDayOf, serviceEndOf, stationById, useDayData, usePlan } from "../usePlan";
 
 const DAY_SHORT = { DAY: "평일", SAT: "토요일", END: "휴일" };
@@ -22,7 +23,7 @@ const TABBAR_H = 68; // 하단 탭바 높이(안전 영역 제외). 모바일 �
 // 탭바 실제 높이(아이폰 홈 막대 안전 영역 포함). App 의 위험한 환승역 화면도 같은 값으로 탭바 자리를 비운다
 export const TABBAR_BOTTOM = "calc(60px + max(env(safe-area-inset-bottom), 8px))";
 
-// 하단 탭: 귀가(이 화면) · 위험한 환승역 · 시연(프리셋·시각) · 내 역(집 역 바꾸기)
+// 하단 탭: 귀가(이 화면) · 위험한 환승역 · 시연(프리셋·시각) · 내 역(집·출발역, 걸음 속도·여유)
 const TABS = [
   { id: "home", icon: "home", label: "귀가" },
   { id: "risk", icon: "chart", label: "위험 환승역" },
@@ -33,8 +34,10 @@ const TABS = [
 // 화면 1·2. 모바일: 파랑 헤더 + 지도 전면 + 끌어올리는 하단 시트 + 하단 탭바. 넓은 화면: 왼쪽 패널(헤더·시트 내용·탭바) + 오른쪽 지도.
 // data = 기본 엔진 data(역·지연 분포, 시간표 없음), raw = 그 원본 JSON. 요일 시간표는 useDayData 가 그 요일만 읽는다.
 // riskOpen / methodOpen: 위험한 환승역 / 「어떻게 계산했나요」 화면이 위에 열려 있는가(탭바 활성 표시용). onCloseRisk 는 둘 다 닫는다
+// pace / onChangePace: 걸음 속도·여유 선호(App 이 보관·저장, settings.js). 경로 탐색과 확률에 같이 들어간다
 export default function MainScreen({
   data: baseData, raw, home, onChangeHome, preset, onOpenRisk, onCloseRisk, riskOpen, onPreset, onOpenMethod, methodOpen,
+  pace, onChangePace,
 }) {
   const desktop = useMediaQuery("(min-width: 768px)");
   const [demo, setDemo] = useState(() => (preset.nowSec != null || preset.tag ? { nowSec: preset.nowSec, tag: preset.tag } : null));
@@ -47,13 +50,16 @@ export default function MainScreen({
   const [toast, setToast] = useState(null);
   const [selDep, setSelDep] = useState(null); // 추천 출발 목록에서 고른 출발(없으면 가장 빨리 도착하는 여정)
   const [transferIdx, setTransferIdx] = useState(null);
-  const [modal, setModal] = useState(null); // time | origin | home | menu | demo
+  const [modal, setModal] = useState(null); // time | origin | home | menu | demo | mine | pace
   const [snap, setSnap] = useState("peek");
   const [sheet, setSheet] = useState({ peek: 280, height: 280 });
   const headerRef = useRef(null);
   const [headerH, setHeaderH] = useState(176); // 모바일 헤더 높이: 지도 위 여백·알림 위치에 쓴다
 
-  const plan = usePlan(day.data, { origin: origin?.id, home, tag: clock.tag, nowSec: clock.nowSec });
+  const po = paceOptions(pace);
+  const plan = usePlan(day.data, {
+    origin: origin?.id, home, tag: clock.tag, nowSec: clock.nowSec, walkSpeed: po.walkSpeed, marginSec: po.marginSec,
+  });
   const serviceEnd = day.data ? serviceEndOf(day.data, clock.tag) : null; // 그 요일 마지막 열차 출발
 
   // ── 고른 여정 ──
@@ -194,7 +200,7 @@ export default function MainScreen({
     <Header
       headerRef={headerRef} desktop={desktop} clock={clock} originId={origin?.id} homeId={home}
       onTime={() => setModal("time")} onOrigin={() => setModal("origin")} onHome={() => setModal("home")}
-      onLocate={() => locate(true)} onMenu={() => setModal("menu")}
+      onLocate={() => locate(true)} onMenu={() => setModal("menu")} pace={pace} onPace={() => setModal("pace")}
     />
   );
 
@@ -217,14 +223,14 @@ export default function MainScreen({
   );
 
   // 탭바: 지금 열린 화면을 활성으로. 위험한 환승역은 App 이 이 화면 위에 덮어 연다
-  const activeTab = riskOpen ? "risk" : modal === "demo" ? "demo" : modal === "home" ? "mine" : "home";
+  const activeTab = riskOpen ? "risk" : modal === "demo" ? "demo" : modal === "home" || modal === "mine" ? "mine" : "home";
   const selectTab = (id) => {
     if (id === "risk") {
       if (!riskOpen) onOpenRisk();
       return;
     }
     if (riskOpen || methodOpen) onCloseRisk();
-    setModal({ home: null, demo: "demo", mine: "home" }[id]);
+    setModal({ home: null, demo: "demo", mine: "mine" }[id]);
   };
   const tabBar = (fixed) => <TabBar active={activeTab} onSelect={selectTab} fixed={fixed} />;
 
@@ -331,8 +337,31 @@ export default function MainScreen({
             <MenuItem icon="home" title="집 역 바꾸기" sub={home} onClick={() => setModal("home")} />
             <MenuItem icon="pin" title="출발역 바꾸기" sub={origin?.id ?? "정하지 않음"} onClick={() => setModal("origin")} />
             <MenuItem icon="clock" title="시각·요일 바꾸기" sub="시연 모드" onClick={() => setModal("time")} />
+            <MenuItem icon="walk" title="걸음 속도·여유" sub={po.label} onClick={() => setModal("pace")} />
             <h3 className="px-2 pt-4 pb-1 text-[13px] font-semibold text-muted">시연 프리셋 · 평일</h3>
             <PresetList onPick={(p) => { close(); onPreset(p); }} />
+          </div>
+        </Modal>
+      )}
+      {modal === "pace" && (
+        <Modal onClose={close} labelledBy="pace-title">
+          <div className="px-5 pt-1 pb-6">
+            <h2 id="pace-title" className="pb-1 text-[20px] font-bold">걸음 속도·여유</h2>
+            <p className="pb-4 text-[14px] text-muted">내 걸음과 여유에 맞춰 환승 성공 확률을 다시 계산해요.</p>
+            <PaceSettings pace={pace} onChange={onChangePace} />
+          </div>
+        </Modal>
+      )}
+      {modal === "mine" && (
+        <Modal onClose={close} labelledBy="mine-title">
+          <div className="px-5 pt-1 pb-6">
+            <h2 id="mine-title" className="pb-3 text-[20px] font-bold">내 역</h2>
+            <div className="divide-y divide-line rounded-2xl bg-canvas">
+              <MineRow icon="home" label="집 근처 역" value={withYeok(home)} onClick={() => setModal("home")} />
+              <MineRow icon="pin" label="출발역" value={origin?.id ? withYeok(origin.id) : "정하지 않음"} onClick={() => setModal("origin")} />
+            </div>
+            <h3 className="pt-6 pb-3 text-[17px] font-bold">걸음 속도·여유</h3>
+            <PaceSettings pace={pace} onChange={onChangePace} />
           </div>
         </Modal>
       )}
@@ -348,7 +377,7 @@ export default function MainScreen({
 // 상단 헤더(레퍼런스 왼쪽 화면 축소판): 메뉴 · 출발 시각 / 흰 카드 안 출발·도착 두 줄 + 점선 + 오른쪽 둥근 현위치 버튼.
 // 모바일은 지도 위에 떠 있고, 넓은 화면은 왼쪽 패널 맨 위에 붙는다.
 // 헤더 오른쪽은 연하늘이라 흰 글씨 대비가 안 나와, 메뉴·시각 버튼은 진한 파랑 알약(.header-pill)에 얹는다
-function Header({ headerRef, desktop, clock, originId, homeId, onTime, onOrigin, onHome, onLocate, onMenu }) {
+function Header({ headerRef, desktop, clock, originId, homeId, onTime, onOrigin, onHome, onLocate, onMenu, pace, onPace }) {
   return (
     <header
       ref={headerRef}
@@ -387,6 +416,10 @@ function Header({ headerRef, desktop, clock, originId, homeId, onTime, onOrigin,
         >
           <Icon name="locate" className="h-6 w-6" />
         </button>
+      </div>
+      {/* 걸음 속도·여유 칩: 출발·도착 카드 바로 아래. 누르면 설정 시트 */}
+      <div className="mt-2 flex">
+        <PaceChip pace={pace} onClick={onPace} />
       </div>
     </header>
   );
@@ -429,6 +462,20 @@ function TabBar({ active, onSelect, fixed }) {
         })}
       </ul>
     </nav>
+  );
+}
+
+// 「내 역」 시트의 한 줄: 아이콘 · 이름 · 지금 값 · ›
+function MineRow({ icon, label, value, onClick }) {
+  return (
+    <button type="button" onClick={onClick} className="flex min-h-14 w-full items-center gap-3 px-4 text-left">
+      <Icon name={icon} className="h-5 w-5 shrink-0 text-brand-ink" />
+      <span className="min-w-0 flex-1">
+        <span className="block text-[12px] text-muted">{label}</span>
+        <span className="block truncate text-[16px] font-semibold">{value}</span>
+      </span>
+      <Icon name="chevronRight" className="h-5 w-5 shrink-0 text-muted" />
+    </button>
   );
 }
 
