@@ -26,6 +26,10 @@
   --color-safe-ink: #047857;
   --color-gamble-ink: #9a4508; /* #b45309 는 연한 칩(#dceeff) 위에서 4.2:1 */
   --color-danger-ink: #be123c;
+  /* 판정 색 큰 숫자용(24px 이상 굵게 = 큰 글씨, 대비 3:1 이상이면 충분). ink 는 큰 숫자에서 갈색·검붉게 보여 밝게 둔다 */
+  --color-safe-big: #059669; /* 흰 3.8 · 칩 3.2 */
+  --color-gamble-big: #ea580c; /* 흰 3.6 · 칩 3.0 */
+  --color-danger-big: #e11d48; /* 흰 4.7 · 칩 4.0 */
 }
 
 html,

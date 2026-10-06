@@ -34,7 +34,7 @@ export default function RiskDetail({ row: r, lineColor, margin = 0 }) {
           </div>
         </div>
         <div className="shrink-0 text-right">
-          <div className={`text-[44px] leading-none font-extrabold tracking-[-0.03em] tabular-nums ${TONE[tone].text}`}>
+          <div className={`text-[44px] leading-none font-extrabold tracking-[-0.03em] tabular-nums ${TONE[tone].big}`}>
             {pctText(r.p_b)}
           </div>
           <div className="mt-1 text-[12px] text-muted">막차 환승 성공 확률</div>

@@ -211,17 +211,6 @@ export default function MainScreen({
     />
   );
 
-  const locateButton = (cls) => (
-    <button
-      type="button"
-      onClick={() => locate(true)}
-      aria-label="내 위치에서 가까운 역으로 출발"
-      className={`absolute z-10 flex h-12 w-12 items-center justify-center rounded-full bg-brand-strong text-white shadow-[0_6px_18px_rgb(21_101_192/0.35)] ring-4 ring-white/70 ${cls}`}
-    >
-      <Icon name="locate" className="h-6 w-6" />
-    </button>
-  );
-
   // 탭바: 지금 열린 화면을 활성으로. 위험한 환승역은 App 이 이 화면 위에 덮어 연다
   const activeTab = riskOpen ? "risk" : modal === "demo" ? "demo" : modal === "home" || modal === "mine" ? "mine" : "home";
   const selectTab = (id) => {
@@ -248,7 +237,6 @@ export default function MainScreen({
           </aside>
           <main className="relative min-w-0 flex-1">
             {map(48, 48)}
-            {locateButton("right-4 bottom-6")}
           </main>
         </div>
       ) : (
@@ -256,7 +244,6 @@ export default function MainScreen({
           {/* 지도는 요약 시트 위까지만: 카카오맵 로고가 가려지지 않게 */}
           <div className="absolute inset-x-0 top-0" style={{ bottom: TABBAR_H + Math.max(0, sheet.peek - 1) }}>
             {map(headerH + 12, snap === "mid" ? sheet.height - sheet.peek + 32 : 32)}
-            {locateButton("right-3 bottom-8")}
           </div>
           {header}
           <BottomSheet snap={snap} onSnapChange={setSnap} summary={summary} onLayout={setSheet} bottomOffset={TABBAR_H} bottomCss={TABBAR_BOTTOM}>

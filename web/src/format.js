@@ -55,12 +55,13 @@ export function toneOf(p) {
 }
 
 // Tailwind 가 찾을 수 있도록 클래스 이름을 문자열 그대로 둔다.
-// text 는 글씨용 진한 색(*-ink, 흰·연하늘 배경 4.5:1 이상), bg·hex 는 막대·점·지도 배지용 기본색
+// text 는 글씨용 진한 색(*-ink, 흰·연하늘 배경 4.5:1 이상), big 은 24px 이상 큰 숫자용 밝은 색(3:1 이상),
+// bg·hex 는 막대·점·지도 배지용 기본색
 export const TONE = {
-  safe: { text: "text-safe-ink", bg: "bg-safe", soft: "bg-safe/10", border: "border-safe/45", hex: "#10b981" },
-  gamble: { text: "text-gamble-ink", bg: "bg-gamble", soft: "bg-gamble/10", border: "border-gamble/50", hex: "#f59e0b" },
-  danger: { text: "text-danger-ink", bg: "bg-danger", soft: "bg-danger/10", border: "border-danger/45", hex: "#f43f5e" },
-  none: { text: "text-muted", bg: "bg-soft", soft: "bg-canvas", border: "border-line", hex: "#b9cbe2" },
+  safe: { text: "text-safe-ink", big: "text-safe-big", bg: "bg-safe", soft: "bg-safe/10", border: "border-safe/45", hex: "#10b981" },
+  gamble: { text: "text-gamble-ink", big: "text-gamble-big", bg: "bg-gamble", soft: "bg-gamble/10", border: "border-gamble/50", hex: "#f59e0b" },
+  danger: { text: "text-danger-ink", big: "text-danger-big", bg: "bg-danger", soft: "bg-danger/10", border: "border-danger/45", hex: "#f43f5e" },
+  none: { text: "text-muted", big: "text-muted", bg: "bg-soft", soft: "bg-canvas", border: "border-line", hex: "#b9cbe2" },
 };
 
 // 초 → "2분 6초" / "34초" / "−20초"(음수). B 모형의 필요 여유·지금 여유 표시용. signed 면 양수에 + 를 붙인다

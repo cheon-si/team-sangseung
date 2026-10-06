@@ -157,7 +157,7 @@ function TransferRow({ data, transfer: t, walkSec, onClick }) {
           <Icon name="chevronRight" className="h-4 w-4 shrink-0 text-muted" />
         </div>
         <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <span className={`text-[24px] leading-none font-extrabold tabular-nums ${TONE[tone].text}`}>{pctText(t.p)}</span>
+          <span className={`text-[24px] leading-none font-extrabold tabular-nums ${TONE[tone].big}`}>{pctText(t.p)}</span>
           <span className="text-[13px] text-muted">환승 성공 확률</span>
         </div>
         <div className="mt-1.5 text-[13px] text-muted tabular-nums">시간표 여유 {signedMinText(t.slack_sec)}</div>

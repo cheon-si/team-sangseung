@@ -122,7 +122,7 @@ function Body({ data, plan, journey, isBest, tone, p, originId, homeId, clock, d
       <div className="mt-3 grid grid-cols-2 gap-3 border-t border-line pt-3">
         <div className="min-w-0">
           <div className="text-[13px] text-muted">{leftLabel}</div>
-          <BigPct p={p} className={TONE[tone].text} />
+          <BigPct p={p} className={TONE[tone].big} />
           <div className="mt-1.5 text-[13px] font-medium text-muted">귀가 확률{provisional ? " · 잠정" : ""}</div>
         </div>
         <div className="min-w-0">

@@ -31,7 +31,7 @@ export default function TransferSheet({ data, transfer: t }) {
           </div>
         </div>
         <div className="shrink-0 text-right">
-          <div className={`text-[44px] leading-none font-extrabold tracking-[-0.03em] tabular-nums ${TONE[tone].text}`}>{pctText(t.p)}</div>
+          <div className={`text-[44px] leading-none font-extrabold tracking-[-0.03em] tabular-nums ${TONE[tone].big}`}>{pctText(t.p)}</div>
           <div className="mt-1 text-[12px] text-muted">환승 성공 확률</div>
         </div>
       </div>

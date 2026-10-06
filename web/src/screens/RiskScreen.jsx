@@ -148,7 +148,7 @@ export default function RiskScreen({ onBack, onOpenMethod, pace }) {
                   onClick={() => setTone(tone === t ? null : t)}
                   className={`card-shadow rounded-2xl bg-surface px-3 py-3 text-left transition ${tone === t ? "ring-2 ring-brand-strong" : ""}`}
                 >
-                  <div className={`text-[28px] font-extrabold leading-none tabular-nums ${TONE[t].text}`}>{counts[t]}</div>
+                  <div className={`text-[28px] font-extrabold leading-none tabular-nums ${TONE[t].big}`}>{counts[t]}</div>
                   <div className="mt-1 text-[13px] text-muted">{TONE_LABEL[t]}</div>
                 </button>
               ))}
@@ -249,7 +249,7 @@ function RiskCard({ row: r, lineColor, onClick, muted = false }) {
             {need && ` · ${need}`}
           </span>
         </span>
-        <span className={`shrink-0 self-center text-[26px] font-extrabold tabular-nums tracking-[-0.02em] ${muted ? "text-muted" : TONE[tone].text}`}>
+        <span className={`shrink-0 self-center text-[26px] font-extrabold tabular-nums tracking-[-0.02em] ${muted ? "text-muted" : TONE[tone].big}`}>
           {pctText(r.p_b)}
         </span>
       </button>
