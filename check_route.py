@@ -11,8 +11,10 @@
   [0] 데이터: 시각이 거꾸로 가거나 직선거리 평균 속도가 30m/s를 넘는 연결 0개
   [1] 환승 확률(B 모형, export_model_b.py): 엔진 = Python(|Δ| ≤ 1e-9), 엔진 vs prob_table p_b |Δ| ≤ 1e-4(소수 4자리 반올림).
       B 채택 전 모형 p_success 와의 차이는 참고로만 출력
-  [2] CSA: 가장 이른 도착, 출발 마감(leave_by.last), options 첫 열차 고정 도착 100% 일치
-      (탑승 수·안전 출발 마감 leave_by.safe 차이는 동률 여정 선택 차이라 참고로만 출력)
+  [2] CSA·경로 선택: 가장 이른 도착(엔진 searchJourney), 출발 마감(leave_by.last) 100% 일치.
+      경로 선택 규칙 = 후보(라운드 × 집 노드별 가장 이른 도착, +20분 이내) 중 귀가 확률 최대(동률이면 이른 도착 → 적은 탑승).
+      options 첫 열차 고정: 엔진 선택 = Python 선택, 엔진 p_home = 후보 중 최대 100%.
+      귀가 계획 전체(py_plan, 태그별 --plan-pairs 쌍): best 여정·options·출발 마감(safe·last) 100% 일치
   [3] 경로 확률: 엔진이 고른 여정에서 엔진 p_home = Python 재귀 값(|Δ| ≤ 1e-9)
   [4] 막차 조합(prob_table 여유 ≥ 0)으로 실제 경로가 있음
   [5] 실제 경로 몇 개를 시간표 CSV 원문과 대조(출력만), [6] planTrip 실행 시간(출력만)
@@ -41,6 +43,8 @@ NODE_SCRIPT = BASE / "web" / "scripts" / "route_check.mjs"
 OUT_DIR = c.OUTPUT_DIR / "route_check"
 TAGS = ("DAY", "SAT", "END")
 MAX_DEPTH = 2            # 놓친 뒤 재탐색 깊이(계약 2장). 깊이 2 여정의 q는 0
+ARRIVAL_SLACK = 1200     # 후보 여정 도착 상한 = 가장 이른 도착 + 20분 (엔진 csa.js ARRIVAL_SLACK)
+P_TIE = 1e-9             # 귀가 확률 동률 판정 (엔진 prob.js P_TIE)
 MAX_SPEED = 30           # 연결 평균 속도(직선거리/시간) 상한 m/s. 정상 연결은 최대 26.5(1호선 급행), 넘으면 가짜 연결
 TOL_TABLE = 1e-4         # prob_table p_b 대조 허용 오차(소수 4자리 반올림만큼)
 TOL_SAME = 1e-9          # 같은 입력이면 엔진과 Python이 같아야 함
@@ -106,17 +110,23 @@ def walk_w(net: dict, a_node: int, d_node: int, w: int) -> float:
 
 def load_timetable(tag: str) -> dict:
     """연결 = 열차의 연속 정차쌍 (dep, arr, from, to, trip, i). dep = 앞 정차 출발, arr = 뒤 정차 도착(없으면 출발).
-    출발 시각 오름차순 정렬(동률이면 도착 시각)."""
+    출발 시각 오름차순 정렬(동률이면 도착 시각, 그다음 전체 정차 순번 = 열차 순서 → 정차 순서).
+    엔진 network.js buildTimetable 과 같은 순서다. 같은 초에 같은 노드로 닿는 두 연결 중 먼저 훑은 쪽이 남으므로
+    순서가 다르면 후보 여정이 달라진다(예: 일요일 부천→상월곡, 6호선 두 방향 열차가 상월곡에 같은 초 도착)."""
     raw = load_json(f"trips_{tag}")
     trips = raw["trips"]
-    conns = []
+    conns, keys, base = [], [], 0
     for ti, tr in enumerate(trips):
         s = tr["stops"]
         for i in range(len(s) - 1):
             dep = s[i][2] if s[i][2] is not None else s[i][1]
             arr = s[i + 1][1] if s[i + 1][1] is not None else s[i + 1][2]
+            if dep is None or arr is None:
+                continue
             conns.append((dep, arr, s[i][0], s[i + 1][0], ti, i))
-    conns.sort()
+            keys.append((dep, arr, base + i))
+        base += len(s)
+    conns = [c for _, c in sorted(zip(keys, conns))]
     return {"tag": tag, "trips": trips, "conns": conns, "deps": [x[0] for x in conns],
             "by_code": {(tr["line"], tr["code"]): ti for ti, tr in enumerate(trips)},
             "dropped": list(raw["meta"].get("excluded_trains", {}))}
@@ -136,27 +146,35 @@ def load_dists() -> dict:
     return out
 
 
-# ── 2) CSA: 가장 이른 도착(동률이면 탑승 수가 적은 여정, 그다음 여유가 큰 환승) ─────────
+# ── 2) CSA 후보: 라운드(탑승 ≤ k회) × 집 노드별 가장 이른 도착, 가장 이른 도착 + ARRIVAL_SLACK 이내 ─────────
 
-def csa(tt: dict, net: dict, origin_nodes, t0: int, home_nodes, first=None, max_rounds: int = 10):
+def csa_candidates(tt: dict, net: dict, origin_nodes, t0: int, home_nodes, first=None, max_rounds: int = 10) -> list:
     """라운드 k = 열차를 k번 이하로 타고 갈 수 있는 가장 이른 시각. 라운드마다 연결을 출발 시각순으로 한 번 훑는다.
-    가장 이른 도착 T*에 처음 닿는 라운드의 여정이 '탑승 수가 가장 적은 최조 도착 여정'이다.
+    후보 = 라운드 k마다, 집 노드마다 가장 일찍 닿는 여정 중 (가장 이른 도착 + ARRIVAL_SLACK) 이내인 것.
+    순서는 라운드 오름차순 → 집 노드 번호 오름차순, 같은 탑승 구간 여정은 처음 것만(엔진 csa.js searchCandidates와 같음).
+    탐색은 상한(지금까지 가장 이른 집 도착 + ARRIVAL_SLACK)보다 늦게 떠나는 연결에서 끊는다. 상한 안에 닿는 여정의 연결은
+    모두 상한 전에 떠나므로 라운드·노드별 가장 이른 도착(상한 이내)은 끊지 않은 경우와 같다.
     한 라운드 안에서 같은 열차를 여러 정차에서 탈 수 있으면 여유(출발 − 탈 준비 시각 = 환승 B)가 가장 큰 정차에서 탄다
-    (엔진 csa.js와 같은 동률 규칙. 먼저 닿는 정차를 고르면 되돌아오는 열차를 분기역 너머에서 갈아타 B가 작아진다).
-    first=(trip, i): 그 열차를 i번째 정차에서 첫 열차로 고정(options·출발 마감 확인용)."""
+    (먼저 닿는 정차를 고르면 되돌아오는 열차를 분기역 너머에서 갈아타 B가 작아진다).
+    first=(trip, i): 그 열차를 i번째 정차에서 첫 열차로 고정(options 확인용).
+    반환: [{"arrive", "rides": [(trip, 탄 정차 i, 내린 정차 j), ...]}, ...] (도착 불가면 빈 목록)."""
     conns, walk, home = tt["conns"], net["walk"], set(home_nodes)
     # origin_nodes: 노드 목록(모두 t0) 또는 {노드: 출발 시각}(놓친 뒤 같은 역 다른 노선으로 걸어가는 재탐색)
     starts = origin_nodes if isinstance(origin_nodes, dict) else {n: t0 for n in origin_nodes}
+    if not first:
+        at_home = [n for n in starts if n in home]
+        if at_home:
+            return [{"arrive": starts[at_home[0]], "rides": []}]
     ready = {} if first else {n: (t, None) for n, t in starts.items()}   # 노드 → (열차를 탈 수 있는 시각, 출처)
     t0 = min(starts.values()) if starts and not first else t0
     readies, rounds = [ready], []
     start = bisect.bisect_left(tt["deps"], t0)
-    best_t, best_k = INF, None
+    limit = INF
     for k in range(1, max_rounds + 1):
         new_ready, alight, boarded, slack = dict(ready), {}, {}, {}
         for x in range(start, len(conns)):
             dep, arr, u, v, ti, i = conns[x]
-            if dep >= best_t:            # 이보다 늦게 떠나면 집에 더 빨리 닿을 수 없음
+            if dep > limit:              # 상한보다 늦게 떠나면 상한 안에 집에 닿을 수 없음
                 break
             if first and k == 1:
                 if (ti, i) == first:
@@ -167,8 +185,8 @@ def csa(tt: dict, net: dict, origin_nodes, t0: int, home_nodes, first=None, max_
                 continue
             if arr < alight.get(v, (INF,))[0]:
                 alight[v] = (arr, ti, boarded[ti], i + 1)
-                if v in home and arr < best_t:
-                    best_t, best_k = arr, k
+                if v in home and arr + ARRIVAL_SLACK < limit:
+                    limit = arr + ARRIVAL_SLACK
                 for m, w in walk[v].items():
                     if arr + w < new_ready.get(m, (INF,))[0]:
                         new_ready[m] = (arr + w, (k, alight[v]))
@@ -177,19 +195,34 @@ def csa(tt: dict, net: dict, origin_nodes, t0: int, home_nodes, first=None, max_
             break
         ready = new_ready
         readies.append(ready)
-    if best_k is None:
-        return None
-    # 되짚기: 집 노드의 도착 기록 → 탄 정차의 '탈 수 있는 시각' 출처 → 앞 열차의 도착 기록 …
-    v = min((rec[0], n) for n, rec in rounds[best_k - 1].items() if n in home)[1]
-    rec, k, rides = rounds[best_k - 1][v], best_k, []
-    while True:
-        _, ti, i, j = rec
-        rides.append((ti, i, j))
-        src = readies[k - 1].get(tt["trips"][ti]["stops"][i][0], (None, None))[1]
-        if src is None:
-            break
-        k, rec = src
-    return {"arrive": best_t, "rides": rides[::-1]}
+
+    def restore(rec, k):
+        """되짚기: 집 노드의 도착 기록 → 탄 정차의 '탈 수 있는 시각' 출처 → 앞 열차의 도착 기록 …"""
+        rides = []
+        while True:
+            _, ti, i, j = rec
+            rides.append((ti, i, j))
+            src = readies[k - 1].get(tt["trips"][ti]["stops"][i][0], (None, None))[1]
+            if src is None:
+                return rides[::-1]
+            k, rec = src
+
+    out, seen = [], set()
+    for k, alight in enumerate(rounds, start=1):
+        for h in sorted(home):
+            if h in alight and alight[h][0] <= limit:
+                rides = restore(alight[h], k)
+                if tuple(rides) not in seen:
+                    seen.add(tuple(rides))
+                    out.append({"arrive": alight[h][0], "rides": rides})
+    return out
+
+
+def csa(tt: dict, net: dict, origin_nodes, t0: int, home_nodes, first=None):
+    """가장 이른 도착 여정(동률이면 먼저 닿은 라운드 = 탑승 수 최소, 그다음 번호가 작은 집 노드) = 후보 중 도착이 가장 이른 첫 후보.
+    엔진 csa.js searchJourney 와 같다. 경로 선택에는 쓰지 않고 탐색 점검([2]·[4])용."""
+    cands = csa_candidates(tt, net, origin_nodes, t0, home_nodes, first)
+    return min(cands, key=lambda c: c["arrive"]) if cands else None
 
 
 def latest_departures(tt: dict, net: dict, home_nodes) -> dict:
@@ -204,13 +237,6 @@ def latest_departures(tt: dict, net: dict, home_nodes) -> dict:
             trip_ok.add(ti)
             latest[u] = max(latest.get(u, -1), dep)
     return latest
-
-
-def origin_departures(tt: dict, origin_nodes, t0: int) -> list:
-    """출발역 노드에서 t0 이후 떠나는 (출발 시각, trip, i) 목록, 늦은 순."""
-    nodes = set(origin_nodes)
-    out = [(dep, ti, i) for dep, _, u, _, ti, i in tt["conns"][bisect.bisect_left(tt["deps"], t0):] if u in nodes]
-    return sorted(out, reverse=True)
 
 
 # ── 3) 확률: 환승 하나(계약 2장) + 경로 재귀 ───────────────────────
@@ -281,7 +307,8 @@ def journey_transfers(ctx: dict, tag: str, rides: list) -> list:
 
 def route_prob(ctx: dict, tag: str, rides: list, home: str, depth: int = 0):
     """P(route) = Π p_k + Σ_k (Π_{j<k} p_j)(1 − p_k)·q_k. q_k = A에서 내린 노드에 dep_D − walk + 1초에 서 있을 때
-    (같은 역 다른 노드는 환승 도보 뒤) 다시 탐색한 최선 여정의 확률 (깊이 MAX_DEPTH 여정의 q는 0)."""
+    (같은 역 다른 노드는 환승 도보 뒤) 다시 탐색한 후보 중 귀가 확률이 가장 높은 여정(choose)의 확률
+    (깊이 MAX_DEPTH 여정의 q는 0)."""
     trs = journey_transfers(ctx, tag, rides)
     if any(t["p"] is None for t in trs):
         return None, trs
@@ -294,13 +321,80 @@ def route_prob(ctx: dict, tag: str, rides: list, home: str, depth: int = 0):
     return total + alive, trs
 
 
+def choose(ctx: dict, tag: str, cands: list, home: str, depth: int = 0):
+    """후보 중 귀가 확률이 가장 높은 여정(엔진 prob.js chooseJourney 와 같은 규칙):
+    ① p 최대 ② 동률(|Δ| < 1e-9)이면 이른 도착 ③ 적은 탑승 ④ 후보 순서. ②③④로 줄 세운 뒤 1e-9 넘게 높을 때만 바꾸고,
+    확률 1 후보가 나오면 멈춘다. 반환: (rides, p) 또는 None."""
+    order = sorted(range(len(cands)), key=lambda i: (cands[i]["arrive"], len(cands[i]["rides"]), i))
+    best = None
+    for i in order:
+        p = route_prob(ctx, tag, cands[i]["rides"], home, depth)[0]
+        if best is None or p > best[1] + P_TIE:
+            best = (cands[i]["rides"], p)
+        if best[1] >= 1 - P_TIE:
+            break
+    return best
+
+
 def best_prob(ctx: dict, tag: str, node: int, t: int, home: str, depth: int) -> float:
     key = (tag, node, t, home, depth)
     if key not in ctx["memo"]:
         starts = {m: t + w for m, w in ctx["net"]["walk"][node].items()}   # 자기 노드 포함(walk[n][n])
-        j = csa(ctx["tt"][tag], ctx["net"], starts, t, ctx["net"]["station_nodes"][home])
-        ctx["memo"][key] = route_prob(ctx, tag, j["rides"], home, depth)[0] if j else 0.0
+        cands = csa_candidates(ctx["tt"][tag], ctx["net"], starts, t, ctx["net"]["station_nodes"][home])
+        pick = choose(ctx, tag, cands, home, depth)
+        ctx["memo"][key] = pick[1] if pick else 0.0
     return ctx["memo"][key]
+
+
+def passes_origin_again(tt: dict, rides: list, origin_nodes) -> bool:
+    """두 번째 이후 탑승 구간이 출발 물리 역을 다시 지나는가(엔진 plan.js passesOriginAgain). options 후보에서 뺀다."""
+    for ti, i, j in rides[1:]:
+        if any(s[0] in origin_nodes for s in tt["trips"][ti]["stops"][i:j + 1]):
+            return True
+    return False
+
+
+def py_plan(ctx: dict, tag: str, origin: str, home: str, now: int) -> dict:
+    """엔진 planTrip 과 같은 규칙의 귀가 계획: 출발역에서 now 이후 떠나는 열차마다 첫 열차 고정 후보 중 최대 확률 여정,
+    같은 여정·출발역 재통과 제외, 지배된 안 제거, 출발 오름차순. best = 남은 안 중 가장 먼저 떠나는 안."""
+    tt, net = ctx["tt"][tag], ctx["net"]
+    on, hn = net["station_nodes"][origin], net["station_nodes"][home]
+    on_set, t0 = set(on), max(now, 75600)
+    cands, seen = [], set()
+    for x in range(bisect.bisect_left(tt["deps"], t0), len(tt["conns"])):
+        dep, _, u, _, ti, i = tt["conns"][x]
+        if u not in on_set:
+            continue
+        found = [cd for cd in csa_candidates(tt, net, [], dep, hn, first=(ti, i))
+                 if not passes_origin_again(tt, cd["rides"], on_set)]
+        pick = choose(ctx, tag, found, home)
+        if pick is None or tuple(pick[0]) in seen:
+            continue
+        seen.add(tuple(pick[0]))
+        arr = next(cd["arrive"] for cd in found if cd["rides"] == pick[0])
+        cands.append({"dep": dep, "arr": arr, "p": pick[1], "rides": pick[0]})
+    if not cands:
+        free = csa_candidates(tt, net, on, t0, hn)
+        pick = choose(ctx, tag, free, home)
+        if pick is None:
+            return {"status": "no_route", "best": None, "options": [], "safe": None, "last": None}
+        arr = next(cd["arrive"] for cd in free if cd["rides"] == pick[0])
+        dep = stop_time(tt["trips"][pick[0][0][0]]["stops"][pick[0][0][1]], "dep")
+        cands.append({"dep": dep, "arr": arr, "p": pick[1], "rides": pick[0]})
+
+    def dominates(a, b, ai, bi):
+        if a["dep"] < b["dep"] or a["arr"] > b["arr"] or a["p"] < b["p"]:
+            return False
+        if a["dep"] > b["dep"] or a["arr"] < b["arr"] or a["p"] > b["p"]:
+            return True
+        return len(a["rides"]) < len(b["rides"]) or (len(a["rides"]) == len(b["rides"]) and ai < bi)
+
+    kept = [b for j, b in enumerate(cands) if not any(i != j and dominates(a, b, i, j) for i, a in enumerate(cands))]
+    kept.sort(key=lambda o: (o["dep"], o["arr"]))
+    latest = lambda ok: next((o["dep"] for o in reversed(kept) if ok(o["p"])), None)
+    opts = kept[-12:] if kept[0] in kept[-12:] else [kept[0]] + kept[-11:]
+    return {"status": "ok", "best": kept[0], "options": opts, "safe": latest(lambda p: p >= 0.8),
+            "last": latest(lambda p: p > 0)}
 
 
 # ── 4) 질의 만들기 ────────────────────────────────────────────────
@@ -524,9 +618,12 @@ def check_table(ctx: dict, tq: list, eng: list, fails: list, report: dict) -> No
     report["table"] = res
 
 
-def check_csa(ctx: dict, plans: list, eng: dict, fails: list, report: dict) -> None:
-    """무작위 질의: 가장 이른 도착 시각, 상태(ok/no_route), 출발 마감(leave_by.last) 일치."""
-    print("\n[2] CSA 가장 이른 도착 · 출발 마감")
+def check_csa(ctx: dict, plans: list, eng: dict, n_full: int, fails: list, report: dict) -> None:
+    """[2] 탐색과 경로 선택.
+    (a) CSA 탐색: 가장 이른 도착(엔진 searchJourney = Python csa), 출발 마감 leave_by.last = 시간표 역방향 스캔
+    (b) options 첫 열차 고정: 엔진이 고른 여정 = Python 선택(choose), 엔진 p_home = 그 첫 열차 후보 중 최대 확률
+    (c) 귀가 계획 전체(py_plan, 태그별 앞 n_full쌍): best 여정·options·안전 출발 마감(leave_by.safe) 일치"""
+    print("\n[2] CSA 가장 이른 도착 · 출발 마감 · 경로 선택(후보 중 귀가 확률 최대)")
     res, latest_cache = [], {}
     for q in plans:
         e, tt, net = eng[q["id"]], ctx["tt"][q["tag"]], ctx["net"]
@@ -536,76 +633,91 @@ def check_csa(ctx: dict, plans: list, eng: dict, fails: list, report: dict) -> N
         if key not in latest_cache:
             latest_cache[key] = latest_departures(tt, net, hn)
         last = max([latest_cache[key].get(n, -1) for n in on])
-        e_best = e.get("best")
-        x = {"id": q["id"], "tag": q["tag"], "origin": q["origin"], "home": q["home"], "now": hms(q["nowSec"]),
-             "py_arrive": j["arrive"] if j else None, "eng_arrive": e_best["arrive_sec"] if e_best else None,
-             "py_rides": len(j["rides"]) if j else None,
-             "eng_rides": sum(1 for l in e_best["legs"] if l["type"] == "ride") if e_best else None,
-             "py_last": last if last >= q["nowSec"] else None,
-             "eng_last": (e["leave_by"]["last"] or {}).get("depart_sec"),
-             "status": e["status"]}
-        res.append(x)
+        res.append({"id": q["id"], "tag": q["tag"], "origin": q["origin"], "home": q["home"], "now": hms(q["nowSec"]),
+                    "py_arrive": j["arrive"] if j else None, "eng_arrive": e.get("earliest"),
+                    "py_last": last if last >= q["nowSec"] else None,
+                    "eng_last": (e["leave_by"]["last"] or {}).get("depart_sec"), "status": e["status"]})
     for tag in TAGS:
         sub = [x for x in res if x["tag"] == tag]
         same_arr = sum(x["py_arrive"] == x["eng_arrive"] for x in sub)
         same_last = sum(x["py_last"] == x["eng_last"] for x in sub)
-        same_rides = sum(x["py_rides"] == x["eng_rides"] for x in sub if x["py_arrive"] is not None)
         n_ok = sum(x["py_arrive"] is not None for x in sub)
-        print(f"  {tag}: {len(sub)}쌍(경로 있음 {n_ok}) 도착 일치 {same_arr}/{len(sub)}, 출발 마감 일치 {same_last}/{len(sub)},"
-              f" 탑승 수 일치 {same_rides}/{n_ok}")
+        print(f"  {tag}: {len(sub)}쌍(경로 있음 {n_ok}) 가장 이른 도착 일치 {same_arr}/{len(sub)}, 출발 마감 일치 {same_last}/{len(sub)}")
     bad = [x for x in res if x["py_arrive"] != x["eng_arrive"] or x["py_last"] != x["eng_last"]]
     for x in bad[:15]:
         print(f"    불일치 {x['tag']} {x['origin']}→{x['home']} {x['now']}: 도착 Py {hms(x['py_arrive'])} / 엔진 {hms(x['eng_arrive'])},"
               f" 마감 Py {hms(x['py_last'])} / 엔진 {hms(x['eng_last'])}")
     if bad:
         fails.append(f"CSA 불일치 {len(bad)}쌍")
-    more = [x for x in res if x["py_arrive"] == x["eng_arrive"] and x["py_rides"] is not None
-            and x["eng_rides"] is not None and x["eng_rides"] > x["py_rides"]]
-    if more:
-        print(f"  참고: 도착은 같지만 엔진 best의 탑승 수가 더 많은 쌍 {len(more)}개(계약: '가능하면' 환승 적은 여정)")
     report["csa"] = res
 
-    # options: 엔진 후보마다 같은 첫 열차를 고정해 Python으로 다시 찾은 도착 시각과 비교
-    n = bad_arr = 0
-    extra = []
-    for q in plans:
-        e = eng[q["id"]]
-        if e["status"] != "ok":
-            continue
-        tt, hn = ctx["tt"][q["tag"]], ctx["net"]["station_nodes"][q["home"]]
-        for o in e["options"]:
-            rides = engine_rides(tt, o["journey"])
-            j = csa(tt, ctx["net"], [], o["depart_sec"], hn, first=rides[0][:2])
-            n += 1
-            if j is None or j["arrive"] != o["arrive_sec"]:
-                bad_arr += 1
-            elif len(j["rides"]) < len(rides):
-                extra.append(route_prob(ctx, q["tag"], j["rides"], q["home"])[0] - o["p_home"])
-    print(f"  options {n}개(첫 열차 고정): 도착 일치 {n - bad_arr}/{n}, 엔진 쪽 탑승 수가 더 많은 후보 {len(extra)}개"
-          + (f" (최소 탑승 여정 확률 − 엔진 확률: 평균 {np.mean(extra):+.4f}, 범위 {min(extra):+.4f}~{max(extra):+.4f})"
-             if extra else ""))
-    if bad_arr:
-        fails.append(f"options 도착 불일치 {bad_arr}개")
-
-    # 안전 출발 마감(p ≥ 0.8): 출발을 늦은 순으로 첫 열차 고정 → Python 재귀 확률. 같은 첫 열차로 같은 시각에 닿는 여정이
-    # 여럿이면 엔진(중간 역에 가장 일찍 닿는 쪽)과 Python(탑승 수 적은 쪽)이 다른 여정을 골라 확률이 다를 수 있다.
-    same, diff = 0, []
+    # (b) options: 엔진 후보마다 같은 첫 열차를 고정해 Python 후보를 모두 계산 → 엔진 선택이 최대 확률이고 Python 선택과 같은가
+    n = n_sel = n_max = n_multi = n_later = 0
+    gains, bad_opt = [], []
     for q in plans:
         e = eng[q["id"]]
         if e["status"] != "ok":
             continue
         tt, net = ctx["tt"][q["tag"]], ctx["net"]
-        safe = None
-        for dep, ti, i in origin_departures(tt, net["station_nodes"][q["origin"]], q["nowSec"]):
-            j = csa(tt, net, [], dep, net["station_nodes"][q["home"]], first=(ti, i))
-            if j and route_prob(ctx, q["tag"], j["rides"], q["home"])[0] >= 0.8:
-                safe = dep
-                break
-        e_safe = (e["leave_by"]["safe"] or {}).get("depart_sec")
-        same += e_safe == safe
-        if e_safe != safe:
-            diff.append(f"{q['tag']} {q['origin']}→{q['home']} {hms(q['nowSec'])}: 엔진 {hms(e_safe)} / Py {hms(safe)}")
-    print(f"  안전 출발 마감(p≥0.8) 일치 {same}/{same + len(diff)}" + (f" — 다른 쌍: {'; '.join(diff[:5])}" if diff else ""))
+        hn, on_set = net["station_nodes"][q["home"]], set(net["station_nodes"][q["origin"]])
+        for o in e["options"]:
+            rides = engine_rides(tt, o["journey"])
+            found = [cd for cd in csa_candidates(tt, net, [], o["depart_sec"], hn, first=rides[0][:2])
+                     if not passes_origin_again(tt, cd["rides"], on_set)]
+            n += 1
+            ps = [route_prob(ctx, q["tag"], cd["rides"], q["home"])[0] for cd in found]
+            pick = choose(ctx, q["tag"], found, q["home"])
+            ok_sel = pick is not None and pick[0] == rides and abs(pick[1] - o["p_home"]) <= TOL_SAME
+            ok_max = bool(ps) and o["p_home"] >= max(ps) - P_TIE
+            n_sel += ok_sel
+            n_max += ok_max
+            if len(found) > 1:
+                n_multi += 1
+                earliest = min(found, key=lambda cd: cd["arrive"])
+                gains.append(o["p_home"] - ps[found.index(earliest)])
+                n_later += o["arrive_sec"] > earliest["arrive"]
+            if not (ok_sel and ok_max):
+                bad_opt.append(f"{q['tag']} {q['origin']}→{q['home']} {hms(o['depart_sec'])}: 엔진 p {o['p_home']:.4f}"
+                               f" Py {pick[1] if pick else float('nan'):.4f} 후보 최대 {max(ps, default=float('nan')):.4f}"
+                               f" 선택 {'같음' if pick and pick[0] == rides else '다름'}")
+    print(f"  options {n}개(첫 열차 고정): 엔진 선택 = Python 선택 {n_sel}/{n}, 엔진 p_home = 후보 중 최대 {n_max}/{n}")
+    if gains:
+        g = np.asarray(gains)
+        print(f"  참고: 후보가 2개 이상인 첫 열차 {n_multi}개 — 가장 이른 도착 여정 대비 확률 이득 평균 {g.mean():+.4f},"
+              f" 이득 > 0 {int((g > P_TIE).sum())}개(최대 {g.max():+.4f}), 더 늦게 도착하는 여정을 고른 경우 {n_later}개")
+    for s in bad_opt[:10]:
+        print(f"    불일치 {s}")
+    if bad_opt:
+        fails.append(f"options 선택 불일치 {len(bad_opt)}개")
+
+    # (c) 귀가 계획 전체: Python py_plan 으로 options·best·출발 마감을 처음부터 다시 만들어 엔진과 비교
+    t_start = time.time()
+    full = [q for tag in TAGS for q in [p for p in plans if p["tag"] == tag][:n_full]]
+    diff = []
+    for q in full:
+        e, tt = eng[q["id"]], ctx["tt"][q["tag"]]
+        py = py_plan(ctx, q["tag"], q["origin"], q["home"], q["nowSec"])
+        why = []
+        if py["status"] != e["status"]:
+            why.append(f"상태 Py {py['status']} / 엔진 {e['status']}")
+        elif py["status"] == "ok":
+            if engine_rides(tt, e["best"]) != py["best"]["rides"] or abs(e["best"]["p_home"] - py["best"]["p"]) > TOL_SAME:
+                why.append(f"best Py {hms(py['best']['dep'])} {py['best']['p']:.4f} / 엔진 {hms(e['best']['depart_sec'])}"
+                           f" {e['best']['p_home']:.4f}")
+            if [engine_rides(tt, o["journey"]) for o in e["options"]] != [o["rides"] for o in py["options"]]:
+                why.append(f"options Py {len(py['options'])}개 / 엔진 {len(e['options'])}개 다름")
+            for k in ("safe", "last"):
+                ev = (e["leave_by"][k] or {}).get("depart_sec")
+                if ev != py[k]:
+                    why.append(f"leave_by.{k} Py {hms(py[k])} / 엔진 {hms(ev)}")
+        if why:
+            diff.append(f"{q['tag']} {q['origin']}→{q['home']} {hms(q['nowSec'])}: {'; '.join(why)}")
+    print(f"  귀가 계획 전체(Python py_plan, {len(full)}쌍): best·options·출발 마감 모두 일치 {len(full) - len(diff)}/{len(full)}"
+          f" ({time.time() - t_start:.0f}초)")
+    for s in diff[:10]:
+        print(f"    불일치 {s}")
+    if diff:
+        fails.append(f"귀가 계획 불일치 {len(diff)}쌍")
 
 
 def engine_rides(tt: dict, journey: dict) -> list:
@@ -642,18 +754,13 @@ def check_route_prob(ctx: dict, plans: list, eng: dict, n: int, fails: list, rep
                         "dq": max([abs(a["q"] - b["q"]) for a, b in zip(trs, et)], default=0.0),
                         "db": max([abs(a["buffer_sec"] - b["buffer_sec"]) for a, b in zip(trs, et)], default=0),
                         "n_tr": len(trs)})
-        # Python이 스스로 찾은 최선 여정의 확률도 엔진 best와 비교(동률 여정 선택 차이 확인)
-        j = csa(tt, ctx["net"], ctx["net"]["station_nodes"][q["origin"]], q["nowSec"], ctx["net"]["station_nodes"][q["home"]])
-        res[-len(js)]["p_python_own_best"] = route_prob(ctx, q["tag"], j["rides"], q["home"])[0]
     best = [x for x in res if x["which"] == "best"]
     d = [abs(x["p_engine"] - x["p_python"]) for x in res]
     d_best = [abs(x["p_engine"] - x["p_python"]) for x in best]
-    d_own = [abs(x["p_engine"] - x["p_python_own_best"]) for x in best]
     print(f"  best {len(best)}개: |엔진−Python| 최대 {max(d_best):.2e} · 95% {pct(d_best, .95):.2e}"
           f" (환승 있는 여정 {sum(x['n_tr'] > 0 for x in best)})")
     print(f"  best+options {len(res)}개: |Δ| 최대 {max(d):.2e}, 환승별 p 최대 |Δ| {max(x['dp'] for x in res):.2e},"
           f" q 최대 |Δ| {max(x['dq'] for x in res):.2e}, 여유 B 최대 차 {max(x['db'] for x in res)}초")
-    print(f"  Python 자체 최선 여정 확률 vs 엔진 best: 최대 |Δ| {max(d_own):.4f}, 다른 쌍 {sum(v > TOL_SAME for v in d_own)}")
     for x in sorted(res, key=lambda x: -abs(x["p_engine"] - x["p_python"]))[:5]:
         if abs(x["p_engine"] - x["p_python"]) > TOL_SAME:
             print(f"    {x['tag']} {x['route']} {x['which']} {hms(x['depart'])}: 엔진 {x['p_engine']:.4f} Py {x['p_python']:.4f}"
@@ -670,7 +777,7 @@ def check_last_combos(lq: list, eng: dict, ctx: dict, fails: list, report: dict)
     for q in lq:
         e, net = eng[q["id"]], ctx["net"]
         j = csa(ctx["tt"][q["tag"]], net, net["station_nodes"][q["origin"]], q["nowSec"], net["station_nodes"][q["home"]])
-        ea = e["best"]["arrive_sec"] if e.get("best") else None
+        ea = e.get("earliest")   # 엔진 CSA 가장 이른 도착(searchJourney). best 는 확률로 고른 여정이라 더 늦게 닿을 수 있다
         res.append({"combo": q["combo"], "eng_ok": ea is not None and ea <= q["deadline"],
                     "py_ok": j is not None and j["arrive"] <= q["deadline"]})
     bad = [x for x in res if not (x["eng_ok"] and x["py_ok"])]
@@ -848,6 +955,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pairs", type=int, default=300, help="요일 태그별 무작위 질의 수")
     ap.add_argument("--prob-pairs", type=int, default=100, help="경로 확률을 대조할 질의 수")
+    ap.add_argument("--plan-pairs", type=int, default=100, help="귀가 계획 전체(py_plan)를 대조할 태그별 질의 수")
     ap.add_argument("--seed", type=int, default=20261004)
     ap.add_argument("--walk-speed", type=float, default=BASE_SPEED, help="걸음 속도 m/s (앱 선택지 1.0·1.2·1.4)")
     ap.add_argument("--margin", type=float, default=0.0, help="여유 선호 초 (앱 선택지 0·30·60)")
@@ -875,7 +983,7 @@ def main() -> None:
     fails, report = [], {"args": vars(args)}
     check_data(ctx, fails)
     check_table(ctx, tq, out["transfers"], fails, report)
-    check_csa(ctx, plans, eng, fails, report)
+    check_csa(ctx, plans, eng, args.plan_pairs, fails, report)
     check_route_prob(ctx, plans, eng, args.prob_pairs, fails, report)
     check_last_combos(lq, eng, ctx, fails, report)
     check_sanity(ctx, sq, eng, report)

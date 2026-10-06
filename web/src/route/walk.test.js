@@ -161,7 +161,7 @@ test("위험한 환승역 재계산(rowProbB): 기본 설정이면 prob_table p_
 test("실제 데이터: 시연 프리셋 경로의 환승 p 가 같은 막차 조합 행의 rowProbB 값과 같다(기본·느림·넉넉하게)", () => {
   const data = buildRouteData(realRaw());
   const model = data.modelB;
-  const presets = [["강남", "천호", 87300], ["서울역", "강남", 87600], ["마포", "잠실", 86700]];
+  const presets = [["강남", "천호", 87300], ["서울역", "강남", 87600], ["장한평", "잠실", 88500], ["마포", "잠실", 86700]];
   let matched = 0;
   for (const opts of [{}, { walkSpeed: 1.0 }, { marginSec: 60 }, { walkSpeed: 1.0, marginSec: 60 }, { walkSpeed: 1.4, marginSec: 30 }]) {
     for (const [origin, home, nowSec] of presets) {
@@ -181,13 +181,29 @@ test("실제 데이터: 시연 프리셋 경로의 환승 p 가 같은 막차 �
   assert.ok(matched > 0);
 });
 
-test("실제 데이터: 기본 설정 시연 프리셋 숫자 그대로(강남→천호 99.8%, 서울역→강남 60.9%, 마포→잠실 30.5%)", () => {
+test("실제 데이터: 기본 설정 시연 프리셋 숫자 그대로(강남→천호 99.8%, 서울역→강남 60.9%, 장한평→잠실 30.5%)", () => {
   const data = buildRouteData(realRaw());
   const p = (origin, home, nowSec, opts = {}) => planTrip(data, { origin, home, tag: "DAY", nowSec, ...opts }).best.p_home;
   assert.equal(p("강남", "천호", 87300).toFixed(3), "0.998");
   assert.equal(p("서울역", "강남", 87600).toFixed(3), "0.609");
-  assert.equal(p("마포", "잠실", 86700).toFixed(3), "0.305");
+  // 위험 프리셋은 마포→잠실 00:05 에서 장한평→잠실 00:35 로 바꿨다(같은 천호 5→8 막차 환승, 여유 1초).
+  // 마포는 귀가 확률 기준 선택에서 을지로4가·성수 경유 81.1% 가 뽑혀 위험 사례가 아니게 됐다(아래 테스트)
+  assert.equal(p("장한평", "잠실", 88500).toFixed(3), "0.305");
   // 넉넉하게(60초)면 같은 여정의 확률이 줄어든다
   assert.ok(p("서울역", "강남", 87600, { marginSec: 60 }) < 0.609);
-  assert.ok(p("마포", "잠실", 86700, { marginSec: 60 }) < 0.305);
+  assert.ok(p("장한평", "잠실", 88500, { marginSec: 60 }) < 0.305);
+});
+
+test("실제 데이터: 마포→잠실 00:05 는 걸음과 상관없이 을지로4가·성수 경유(느리게 걸으면 더 안전해 보이던 역전이 없다)", () => {
+  // 예전 규칙(가장 이른 도착 중 탑승 수 최소)은 기본 걸음에서 천호 5→8(여유 1초, 30.5%)을 골랐고, 느린 걸음에서는 천호 환승이
+  // 시간표상 불가능해져 을지로4가·성수 경유(79.7%)로 바뀌어 느리게 걸을수록 확률이 높아 보였다. 셋 다 00:54 도착
+  const data = buildRouteData(realRaw());
+  const stations = (j) => j.transfers.map((t) => t.at_station);
+  const base = planTrip(data, { origin: "마포", home: "잠실", tag: "DAY", nowSec: 86700 }).best;
+  const slow = planTrip(data, { origin: "마포", home: "잠실", tag: "DAY", nowSec: 86700, walkSpeed: 1.0 }).best;
+  assert.deepEqual(stations(base), ["을지로4가", "성수"]);
+  assert.deepEqual(stations(slow), ["을지로4가", "성수"]);
+  assert.equal(base.p_home.toFixed(3), "0.811");
+  assert.equal(slow.p_home.toFixed(3), "0.797");
+  assert.ok(slow.p_home <= base.p_home);
 });

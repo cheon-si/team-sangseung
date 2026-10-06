@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { buildNetwork, buildTimetable } from "./network.js";
-import { journeyLegs, searchJourney } from "./csa.js";
+import { journeyLegs, searchCandidates, searchJourney } from "./csa.js";
 
 // ── 합성 픽스처 ──────────────────────────────────────────────
 // 노드 id "노선:역명", 물리 역 = 역명. 1:B ↔ 2:B 환승 도보 120초, 2:D 는 같은 노드 same_line 환승 90초.
@@ -169,6 +169,19 @@ test("동률이면 환승이 적은 여정: 1006 → 1007 대신 직행 1005", (
   const r = rides(res);
   assert.equal(r.length, 1);
   assert.equal(r[0].trip, "1005");
+});
+
+test("후보: 같은 시각 도착이라도 탑승 수가 다르면 각각 후보(라운드 1 직행 1005, 라운드 2 환승 1006 → 1007)", () => {
+  // 확률로 고를 수 있게 둘 다 돌려준다. searchJourney(가장 이른 도착 중 탑승 수 최소)는 그중 첫 후보인 직행
+  const cands = searchCandidates(net, tt, { startNodes: stationNodes("A"), startSec: 87900, homeNodes: stationNodes("C") });
+  assert.deepEqual(
+    cands.map((c) => [c.arrive, rides(c).map((l) => l.trip)]),
+    [
+      [89200, ["1005"]],
+      [89200, ["1006", "1007"]],
+    ],
+  );
+  assert.deepEqual(searchCandidates(net, tt, { startNodes: stationNodes("A"), startSec: 90000, homeNodes: stationNodes("C") }), []);
 });
 
 test("도착 불가면 null: 마지막 열차 뒤, 또는 열차가 없는 방향", () => {

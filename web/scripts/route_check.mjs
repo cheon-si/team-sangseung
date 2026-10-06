@@ -4,14 +4,17 @@
 //          plans: [ {id, tag, origin, home, nowSec} ] }
 //   options = 걸음 속도·여유 선호(없으면 기본 1.2m/s · 0초). planTrip 과 환승 확률에 같이 넘긴다
 //   W = B 모형 걸음 시간(초, 환승거리 ÷ 속도), B = B 채택 전 모형의 시간표 여유(없으면 null), row = prob_table 행 번호(없으면 null)
-// 결과 = { transfers: [ {p, yhat, slack, s90, s80, p_row, s90_row, p_pre, a_dist_key, d_dist_key} | null ], plans: [ {id, ms, status, best, options, leave_by} ] }
+// 결과 = { transfers: [ {p, yhat, slack, s90, s80, p_row, s90_row, p_pre, a_dist_key, d_dist_key} | null ],
+//          plans: [ {id, ms, status, best, options, leave_by, earliest} ] }
+//   earliest = 같은 질의의 CSA 가장 이른 도착(searchJourney, planTrip 시간 밖). best 는 귀가 확률로 고른 여정이라 이것보다 늦을 수 있다
 //   p_row·s90_row = 그 prob_table 행을 위험한 환승역 화면처럼 rowProbB 로 다시 계산한 값
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
-import { loadRouteData, planTrip, timetableOf } from "../src/route/index.js";
+import { BASE_WALK_SPEED, WINDOW_START, loadRouteData, planTrip, timetableOf } from "../src/route/index.js";
+import { searchJourney } from "../src/route/csa.js";
 import { pickArrDist, pickDepDist, rowProbB, transferProb, transferProbB } from "../src/route/prob.js";
-import { NONE } from "../src/route/network.js";
+import { NONE, netForSpeed } from "../src/route/network.js";
 
 const DATA_DIR = new URL("../public/data/", import.meta.url);
 const readJson = (name) => JSON.parse(readFileSync(new URL(`${name}.json`, DATA_DIR), "utf8"));
@@ -69,6 +72,16 @@ function slim(j) {
   };
 }
 
+// CSA 가장 이른 도착(Python csa() 와 대조). 출발역·집이 없거나 같으면 null
+function earliestArrive(q) {
+  const net = netForSpeed(data.network, options.walkSpeed ?? BASE_WALK_SPEED);
+  const o = net.stationById.get(q.origin);
+  const h = net.stationById.get(q.home);
+  if (!o || !h || q.origin === q.home) return null;
+  const res = searchJourney(net, timetableOf(data, q.tag), { startNodes: o.nodes, startSec: Math.max(q.nowSec, WINDOW_START), homeNodes: h.nodes });
+  return res ? res.arrive : null;
+}
+
 const out = { transfers: queries.transfers.map(transferQuery), plans: [] };
 for (const q of queries.plans) {
   const t0 = performance.now();
@@ -81,6 +94,7 @@ for (const q of queries.plans) {
     best: slim(r.best),
     options: r.options.map((o) => ({ ...o, journey: slim(o.journey) })),
     leave_by: r.leave_by,
+    earliest: earliestArrive(q),
   });
 }
 writeFileSync(outPath, JSON.stringify(out));

@@ -4,13 +4,13 @@
 //     c = 여유 선호(마진, 기본 0초). B 보고서 12장: 걸음 속도·마진에 따라 판정이 크게 바뀌어 사용자가 고른다
 //     ŷ = 절편 + F(도착노선) + L(갈아탈 노선) + 주말·공휴일 + el10 × (경과운행시간 분 / 10),  A_status = 실측(0)
 //     p = 1 − #(잔차 < c − S − ŷ) / n   (잔차 경험분포, 노선 공통)
-//   경로: P = Π p_k + Σ_k (Π_{j<k} p_j)(1 − p_k) · q_k,  q_k = 놓친 시점에서 다시 찾은 최선 경로의 P (깊이 2까지)
+//   경로: P = Π p_k + Σ_k (Π_{j<k} p_j)(1 − p_k) · q_k,  q_k = 놓친 시점에서 다시 찾은 후보 중 귀가 확률이 가장 높은 경로의 P (깊이 2까지)
 //
 //   B 채택 전 모형(2차 합성곱, 계약 2장 · Python validate.conv_matrix): p = Σ_{δ∈D} w_δ · F_A(B + δ).
 //   아래 buildDists·pickArrDist·pickDepDist·transferProb 가 그 코드다. 지우지 않고 남겨 두지만, model_b.json 을 읽은
 //   앱에서는 확률에 쓰지 않는다(model_b 가 없을 때만 대체로 쓰고, 화면의 "지연 분포 보기" 참고 그래프 키만 pickArrDist 로 고른다).
 
-import { searchJourney } from "./csa.js";
+import { searchCandidates } from "./csa.js";
 import { BASE_WALK_SPEED, lowerBound, transferDistance, walkSecFor } from "./network.js";
 
 export const MAX_DEPTH = 2; // 놓친 뒤 재탐색 깊이. 이 깊이의 경로는 q = 0(보수적)
@@ -358,8 +358,32 @@ export function evaluateJourney(ctx, segments, depth = 0) {
   return { p_home, transfers };
 }
 
-// A에서 내린 노드에 sec 시각에 서 있을 때 다시 탐색한 최선 경로의 귀가 확률(메모이즈).
+const P_TIE = 1e-9; // 귀가 확률 동률 판정
+
+/**
+ * 후보 여정(csa.js searchCandidates) 중 귀가 확률이 가장 높은 것. 경로 선택 규칙(planTrip 첫 열차별 여정·놓친 뒤 재탐색 공통):
+ *   ① p_home 최대 ② 동률(|Δ| < 1e-9)이면 더 이른 도착 ③ 그다음 탑승 수가 적은 쪽 ④ 그다음 후보 순서(라운드 → 집 노드 번호)
+ * 후보를 ②③④ 순으로 먼저 줄 세운 뒤, 앞 후보보다 1e-9 넘게 높을 때만 바꾼다. 그래서 확률 1인 후보가 나오면
+ * 뒤 후보는 이길 수 없어 계산을 멈춘다(놓친 뒤 재탐색에서 흔함).
+ * depth = 이 여정들의 재탐색 깊이(evaluateJourney 와 같음). 반환: { res, ev: evaluateJourney 결과 } 또는 null(후보 없음).
+ */
+export function chooseJourney(ctx, cands, depth = 0) {
+  const order = cands.map((res, i) => ({ res, i }));
+  order.sort((a, b) => a.res.arrive - b.res.arrive || a.res.segments.length - b.res.segments.length || a.i - b.i);
+  let best = null;
+  for (const { res } of order) {
+    const ev = evaluateJourney(ctx, res.segments, depth);
+    if (!best || ev.p_home > best.ev.p_home + P_TIE) best = { res, ev };
+    if (best.ev.p_home >= 1 - P_TIE) break;
+  }
+  return best;
+}
+
+// A에서 내린 노드에 sec 시각에 서 있을 때 다시 탐색한 최선 경로(귀가 확률이 가장 높은 후보, chooseJourney)의 귀가 확률(메모이즈).
 // 출발 노드 = 그 노드(같은 노드 다른 열차는 sameNodeWalk 뒤) + 환승으로 이어진 노드(도보 뒤)
+// 재탐색도 최상위와 같은 규칙으로 고른다(사용자가 놓친 뒤 실제로 따를 안내와 같아야 q 가 그 안내의 확률이 된다).
+// 후보마다 그 아래 재탐색을 하므로 계산이 후보 수만큼 늘지만, 깊이 제한(MAX_DEPTH)과 (노드, 시각, 깊이) 메모이즈,
+// 확률 1 후보에서 멈추기로 막는다. 깊이 MAX_DEPTH 의 후보는 q = 0 이라 환승 확률의 곱만 비교한다.
 function missedProb(ctx, node, sec, depth) {
   const key = `${node}|${sec}|${depth}`;
   if (ctx.memo.has(key)) return ctx.memo.get(key);
@@ -370,8 +394,8 @@ function missedProb(ctx, node, sec, depth) {
     startNodes.push(adjTo[k]);
     startTimes.push(sec + adjWalk[k]);
   }
-  const res = searchJourney(ctx.net, ctx.tt, { startNodes, startTimes, homeNodes: ctx.homeNodes });
-  const p = res ? evaluateJourney(ctx, res.segments, depth).p_home : 0;
+  const pick = chooseJourney(ctx, searchCandidates(ctx.net, ctx.tt, { startNodes, startTimes, homeNodes: ctx.homeNodes }), depth);
+  const p = pick ? pick.ev.p_home : 0;
   ctx.memo.set(key, p);
   return p;
 }

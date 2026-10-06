@@ -48,7 +48,7 @@ export default function MainScreen({
   const [userPos, setUserPos] = useState(null);
   const [nearby, setNearby] = useState([]);
   const [toast, setToast] = useState(null);
-  const [selDep, setSelDep] = useState(null); // 추천 출발 목록에서 고른 출발(없으면 가장 빨리 도착하는 여정)
+  const [selDep, setSelDep] = useState(null); // 추천 출발 목록에서 고른 출발(없으면 지금 출발해 처음 타는 대표 여정 plan.best)
   const [transferIdx, setTransferIdx] = useState(null);
   const [modal, setModal] = useState(null); // time | origin | home | menu | demo | mine | pace
   const [snap, setSnap] = useState("peek");

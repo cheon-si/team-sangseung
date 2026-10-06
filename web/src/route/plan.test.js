@@ -4,7 +4,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { HOLIDAYS, buildRouteData, loadRouteData, nearestStations, planTrip, serviceDayOf } from "./plan.js";
+import { HOLIDAYS, buildRouteData, loadRouteData, nearestStations, planTrip, serviceDayOf, timetableOf } from "./plan.js";
+import { ARRIVAL_SLACK, searchCandidates } from "./csa.js";
+import { chooseJourney } from "./prob.js";
 
 const close = (actual, expected, eps = 1e-9) =>
   assert.ok(Math.abs(actual - expected) <= eps, `${actual} ≠ ${expected}`);
@@ -84,29 +86,30 @@ const firstTrip = (j) => j.legs.find((l) => l.type === "ride").trip;
 
 // ── planTrip ────────────────────────────────────────────────
 
-test("options: 도착 불가·지배된 안을 빼고 출발 시각 오름차순, best 는 지배당해도 남긴다", () => {
+test("options: 도착 불가·지배된 안을 빼고 출발 시각 오름차순, best = 남은 안 중 가장 먼저 떠나는 안", () => {
   const r = planTrip(data, { origin: "O", home: "H", tag: "DAY", nowSec: 82000 });
   assert.equal(r.status, "ok");
   // 1002(반대 방향, 1005가 더 늦게 떠나 같은 시각 도착)·1009(도착 불가) 제외.
-  // 1001 은 늦게 떠나 같은 시각 도착하는 1003 에 지배되지만 best(처음 탈 수 있는 열차)라 띠에 남는다
+  // 1001 은 늦게 떠나 같은 시각·같은 확률(1)로 닿는 1003 에 지배돼 빠진다.
+  // (규칙 변경: 예전에는 best 를 "가장 이른 도착 중 가장 먼저 떠나는 안"으로 따로 정해 지배당한 1001 도 띠에 남겼다.
+  //  이제 best 는 지배된 안을 뺀 options 의 첫 안이라 1003 이 best 다 — 20분 더 있다 떠나도 같은 시각·같은 확률)
   assert.deepEqual(
     r.options.map((o) => firstTrip(o.journey)),
-    ["1001", "1003", "1005", "1007"],
+    ["1003", "1005", "1007"],
   );
   assert.deepEqual(
     r.options.map((o) => [o.depart_sec, o.arrive_sec]),
     [
-      [82800, 84700],
       [83400, 84700],
       [84000, 85600],
       [84600, 85900],
     ],
   );
   assert.equal(r.options[0].journey, r.best); // best 와 같은 객체라 요약과 칩 숫자가 같다
-  close(r.options[1].p_home, 1); // .75 + .25 · 1(2002 로 귀가)
-  close(r.options[1].journey.transfers[0].p, 0.75);
-  close(r.options[3].p_home, 0.75);
-  assert.equal(r.options[3].journey.transfers[0].critical, true);
+  close(r.options[0].p_home, 1); // .75 + .25 · 1(2002 로 귀가)
+  close(r.options[0].journey.transfers[0].p, 0.75);
+  close(r.options[2].p_home, 0.75);
+  assert.equal(r.options[2].journey.transfers[0].critical, true);
   // 같은 여정 없음
   const sigs = r.options.map((o) => JSON.stringify(o.journey.legs));
   assert.equal(new Set(sigs).size, sigs.length);
@@ -120,10 +123,11 @@ test("leave_by: safe = p ≥ .8 인 가장 늦은 출발, last = p > 0 인 가�
   close(r.leave_by.last.p_home, 0.75);
 });
 
-test("best: nowSec 이후 가장 빨리 도착하는 여정과 Journey 필드", () => {
+test("best: 지배되지 않은 안 중 가장 먼저 떠나는 여정과 Journey 필드", () => {
   const r = planTrip(data, { origin: "O", home: "H", tag: "DAY", nowSec: 82000 });
   assert.equal(r.best.arrive_sec, 84700);
-  assert.equal(r.best.depart_sec, 82800); // 처음 탈 수 있는 열차로 같은 시각 도착
+  // 규칙 변경: 82800(1001)이 아니라 83400(1003). 1001 은 같은 시각·같은 확률로 닿는 늦은 출발 1003 에 지배된다
+  assert.equal(r.best.depart_sec, 83400);
   assert.deepEqual(
     r.best.legs.map((l) => l.type),
     ["ride", "transfer", "ride"],
@@ -134,7 +138,7 @@ test("best: nowSec 이후 가장 빨리 도착하는 여정과 Journey 필드", 
     assert.ok(key in t, key);
   }
   assert.equal(t.at_station, "X");
-  assert.equal(t.buffer_sec, 84100 - 83400 - 60);
+  assert.equal(t.buffer_sec, 84100 - 84000 - 60);
 });
 
 test("21:00 전 nowSec 는 75600 으로 올려 탐색한다", () => {
@@ -166,6 +170,100 @@ test("options 는 최대 12개, 마지막 가능한 출발까지 포함(best 가
   assert.equal(firstTrip(r.options[1].journey), "D9");
   assert.equal(r.leave_by.last.depart_sec, 80000 + 19 * 300);
   for (let i = 1; i < r.options.length; i++) assert.ok(r.options[i - 1].depart_sec <= r.options[i].depart_sec);
+});
+
+// ── 경로 선택: 후보 중 귀가 확률이 가장 높은 여정 ──────────────────
+// 첫 열차 1001: O → X → Y (1호선). 집 H 는 2호선(2:H)·4호선(4:H) 두 노드.
+//   2회 탑승: X 에서 2호선 2001 → 2:H.  3회 탑승: Y 에서 3호선 3001 → Z 에서 4호선 4001 → 4:H.
+// B 모형 = 계수 0, 잔차 {-60, -30, 0, 30} → p = P(잔차 ≥ −S): S ≥ 60 → 1, 30~59 → .75, 0~29 → .5. 환승 도보 모두 60초.
+// 1001 은 X 에 서는 시간 없이(도착 = 출발) 지나가므로 2001 을 놓치면 X 에서 다시 탈 열차가 없다(q = 0).
+function makeChoice({ d2 = 83470, h2 = 85000, h4 = 85000 } = {}) {
+  const ids = ["1:O", "1:X", "2:X", "2:H", "1:Y", "3:Y", "3:Z", "4:Z", "4:H"];
+  const ix = new Map(ids.map((id, i) => [id, i]));
+  const nodes = ids.map((id, i) => {
+    const [line, nm] = id.split(":");
+    return { id, line, nm, station: nm, lat: 37.5 + i * 0.01, lon: 127.0 };
+  });
+  const stations = [];
+  nodes.forEach((n, i) => {
+    let s = stations.find((x) => x.id === n.station);
+    if (!s) stations.push((s = { id: n.station, name: n.station, lines: [], lat: n.lat, lon: n.lon, nodes: [] }));
+    s.lines.push(n.line);
+    s.nodes.push(i);
+  });
+  const tr = (f, t) => ({ from: ix.get(f), to: ix.get(t), walk_sec: 60, src: "csv", same_line: false });
+  const t = (line, code, stops) => ({
+    line, code, dir: "UP", express: false, dest: stops.at(-1)[0].split(":")[1],
+    stops: stops.map(([id, arr, dep]) => [ix.get(id), arr, dep, 0]),
+  });
+  return {
+    network: {
+      meta: {}, line_colors: {}, nodes, stations,
+      transfers: [tr("1:X", "2:X"), tr("2:X", "1:X"), tr("1:Y", "3:Y"), tr("3:Y", "1:Y"), tr("3:Z", "4:Z"), tr("4:Z", "3:Z")],
+    },
+    trips: {
+      DAY: { meta: {}, trips: [
+        t("1", "1001", [["1:O", null, 82800], ["1:X", 83400, 83400], ["1:Y", 83700, null]]),
+        t("2", "2001", [["2:X", null, d2], ["2:H", h2, null]]),
+        t("3", "3001", [["3:Y", null, 83900], ["3:Z", 84300, null]]), // Y 여유 140초 → p 1
+        t("4", "4001", [["4:Z", null, 84500], ["4:H", h4, null]]), // Z 여유 140초 → p 1
+      ] },
+      SAT: { meta: {}, trips: [] },
+      END: { meta: {}, trips: [] },
+    },
+    route_dists: { meta: { lastk_a_lines: [], band_members: {} }, arr_cells: {}, arr_last3: {}, dep_last3: {}, dep_all: {} },
+    model_b: { meta: {}, coef: { 절편: 0, el10: 0 }, resid: [-60, -30, 0, 30] },
+  };
+}
+const choicePlan = (opts) => planTrip(buildRouteData(makeChoice(opts)), { origin: "O", home: "H", tag: "DAY", nowSec: 82000 });
+const rideLines = (j) => j.legs.filter((l) => l.type === "ride").map((l) => l.line);
+
+test("경로 선택: 같은 시각에 도착하면 탑승 수가 많아도 귀가 확률이 높은 여정(X 여유 10초 .5 대신 Y·Z 경유 1)", () => {
+  // 예전 규칙(가장 이른 도착 중 탑승 수 최소)이면 2회 탑승(X 2호선, p .5)을 골랐다 — 마포→잠실 00:05 의 천호 5→8 축소판
+  const r = choicePlan();
+  assert.deepEqual(rideLines(r.best), ["1", "3", "4"]);
+  assert.equal(r.best.arrive_sec, 85000);
+  close(r.best.p_home, 1);
+  assert.equal(r.options.length, 1); // 첫 열차가 같은 두 후보 중 하나만 options 에 들어간다
+});
+
+test("경로 선택: 확률이 높으면 조금 늦게 도착하는 여정(5분 늦은 4호선), 가장 이른 도착 + 20분을 넘으면 후보가 아니다", () => {
+  const late = choicePlan({ h4: 85300 }); // 2호선 85000(.5) vs 4호선 85300(1)
+  assert.deepEqual(rideLines(late.best), ["1", "3", "4"]);
+  assert.equal(late.best.arrive_sec, 85300);
+  close(late.best.p_home, 1);
+  const tooLate = choicePlan({ h4: 85000 + ARRIVAL_SLACK + 1 }); // 20분 1초 늦음 → 후보 밖
+  assert.deepEqual(rideLines(tooLate.best), ["1", "2"]);
+  close(tooLate.best.p_home, 0.5);
+  const edge = choicePlan({ h4: 85000 + ARRIVAL_SLACK }); // 딱 20분 늦음 → 후보
+  assert.deepEqual(rideLines(edge.best), ["1", "3", "4"]);
+});
+
+test("경로 선택 동률: 확률이 같으면 이른 도착, 도착도 같으면 탑승 수가 적은 여정", () => {
+  // X 여유 140초(2001 83600 출발)면 두 여정 모두 p 1
+  const sameArr = choicePlan({ d2: 83600 }); // 둘 다 85000 도착 → 탑승 2회
+  assert.deepEqual(rideLines(sameArr.best), ["1", "2"]);
+  const earlier = choicePlan({ d2: 83600, h4: 84900 }); // 4호선이 100초 먼저 도착 → 탑승 3회라도 이른 도착
+  assert.deepEqual(rideLines(earlier.best), ["1", "3", "4"]);
+  assert.equal(earlier.best.arrive_sec, 84900);
+});
+
+test("searchCandidates: 라운드 × 집 노드별 후보, chooseJourney 는 p 최대를 고른다", () => {
+  const data = buildRouteData(makeChoice());
+  const tt = timetableOf(data, "DAY");
+  const net = data.network;
+  const homeNodes = net.stationById.get("H").nodes;
+  const cands = searchCandidates(net, tt, { startNodes: net.stationById.get("O").nodes, startSec: 82000, homeNodes });
+  // 라운드 2 = 2:H(2회 탑승), 라운드 3 = 4:H(3회 탑승). 라운드 3의 2:H 는 라운드 2와 같은 여정이라 하나만 남는다
+  assert.deepEqual(
+    cands.map((c) => [c.segments.length, net.nodes[c.homeNode].line, c.arrive]),
+    [[2, "2", 85000], [3, "4", 85000]],
+  );
+  const ctx = { net, tt, tag: "DAY", dayType: "weekday", dists: data.dists, modelB: data.modelB, probIndex: null, homeNodes, memo: new Map() };
+  const pick = chooseJourney(ctx, cands, 0);
+  assert.equal(pick.res, cands[1]);
+  close(pick.ev.p_home, 1);
+  assert.equal(chooseJourney(ctx, [], 0), null);
 });
 
 // ── serviceDayOf ────────────────────────────────────────────
@@ -255,14 +353,23 @@ test("loadRouteData: fetchJson 으로 6개 파일(model_b 포함)을 읽고, pro
   assert.equal(r.best.arrive_sec, 84700);
 });
 
-test("best: 같은 시각에 도착하는 안이 여럿이면 가장 먼저 떠나는 안(요약 숫자 = 지금 출발해 처음 타는 열차)", () => {
-  // 1001(82800 출발)과 1003(83400 출발)은 모두 84700 도착. 지금(82000) 떠나면 1001을 탄다
-  const r = planTrip(data, { origin: "O", home: "H", tag: "DAY", nowSec: 82000 });
-  const minArr = Math.min(...r.options.map((o) => o.arrive_sec));
-  const firstDep = Math.min(...r.options.filter((o) => o.arrive_sec === minArr).map((o) => o.depart_sec));
-  assert.equal(r.best.arrive_sec, minArr);
-  assert.equal(r.best.depart_sec, firstDep);
+test("best: 같은 시각에 도착해도 먼저 떠나는 안의 확률이 높으면 그 안(지금 떠나면 93%인데 63%로 보이던 문제)", () => {
+  // 1001(82800 출발, X 여유 640초 → p 1)과 1003(83400 출발, 여유 40초 → p .75, 놓치면 2호선 없음 q 0)이 모두 84700 도착.
+  // 늦게 떠나는 1003 은 확률이 낮아 1001 을 지배하지 못한다 → 둘 다 남고 best 는 먼저 떠나는 1001
+  // (서울역→강남 00:15 평일: 00:16 출발 93%, 00:27 출발 63%, 둘 다 00:54 도착이던 사례의 축소판)
+  const trips = [
+    trip("1", "1001", "UP", [["1:O", null, 82800], ["1:X", 83400, null]]),
+    trip("1", "1003", "UP", [["1:O", null, 83400], ["1:X", 84000, null]]),
+    trip("2", "2001", "OUT", [["2:X", null, 84100], ["2:H", 84700, null]]),
+  ];
+  const r = planTrip(buildRouteData(makeRaw(trips)), { origin: "O", home: "H", tag: "DAY", nowSec: 82000 });
+  assert.deepEqual(
+    r.options.map((o) => [firstTrip(o.journey), o.arrive_sec]),
+    [["1001", 84700], ["1003", 84700]],
+  );
+  close(r.options[1].p_home, 0.75);
   assert.equal(firstTrip(r.best), "1001");
+  close(r.best.p_home, 1);
 });
 
 test("q: 갈아탈 열차를 놓쳐도 같은 역 다른 노선으로 집에 갈 수 있으면 결정적 환승이 아니다", () => {

@@ -1,8 +1,8 @@
 // 경로 엔진 4/4: 공개 API. 데이터 읽기, 운영일 판정, 가까운 역, 귀가 계획(planTrip). 계약 3장 공개 API.
 
 import { BASE_WALK_SPEED, buildNetwork, buildTimetable, lowerBound, netForSpeed } from "./network.js";
-import { journeyLegs, journeySignature, searchJourney } from "./csa.js";
-import { buildDists, buildModelB, buildProbIndex, evaluateJourney } from "./prob.js";
+import { journeyLegs, journeySignature, searchCandidates } from "./csa.js";
+import { buildDists, buildModelB, buildProbIndex, chooseJourney } from "./prob.js";
 
 // 달력상 평일이지만 휴일 시간표로 도는 날(토요일 공휴일 포함).
 // 출처: 저장소 루트 common.py HOLIDAYS. 파이썬 쪽을 바꾸면 여기도 같이 바꾼다.
@@ -96,10 +96,10 @@ export function nearestStations(data, lat, lon, k = 3) {
     }));
 }
 
-// 탐색 결과 → 공개 Journey 객체(legs, 확률, 환승 상세)
-function makeJourney(ctx, res) {
+// 고른 후보(chooseJourney 결과: 탐색 결과 res + 확률 계산 ev) → 공개 Journey 객체(legs, 확률, 환승 상세)
+function makeJourney(ctx, { res, ev }) {
   const { tt } = ctx;
-  const { p_home, transfers } = evaluateJourney(ctx, res.segments, 0);
+  const { p_home, transfers } = ev;
   return {
     legs: journeyLegs(ctx.net, tt, res.segments),
     depart_sec: tt.cDep[res.segments[0].board],
@@ -123,11 +123,12 @@ const emptyResult = (status) => ({ status, best: null, options: [], leave_by: { 
 
 /**
  * 귀가 계획. origin/home = 물리 역 id, tag = DAY|SAT|END, nowSec = 운영일 초(21:00 전이면 21:00으로 올림).
- * best    = nowSec 이후 가장 빨리 도착하는 여정. 도착이 같으면 가장 먼저 떠나는 여정(지금 출발해 처음 타는 열차)
  * options = 출발역에서 nowSec 이후 출발하는 열차마다 "그 열차를 첫 열차로 타는" 최선 여정.
+ *           최선 = 후보(csa.js searchCandidates: 탑승 수·집 노선별 가장 이른 도착, 가장 이른 도착 + 20분 이내) 중
+ *           귀가 확률이 가장 높은 여정(동률이면 이른 도착 → 적은 탑승, prob.js chooseJourney).
  *           도착 불가·같은 여정·출발역을 다시 지나는 여정은 빼고, 출발·도착·확률 모두에서 다른 안보다 못한 안
  *           (늦게 떠나 일찍 도착하는 안이 있는 경우 등)도 뺀 뒤 출발 시각 오름차순으로 마지막 12개.
- *           best 는 지배당하더라도 항상 넣는다(화면의 출발 시각 띠에서 지금 보고 있는 여정이 선택되도록).
+ * best    = options(지배된 안을 뺀 뒤) 중 가장 먼저 떠나는 안 = "지금 출발하면" 의 여정. 출발 시각 띠에서 빠지지 않는다.
  * leave_by.safe = p_home ≥ 0.8 인 가장 늦은 출발, leave_by.last = p_home > 0 인 가장 늦은 출발
  * walkSpeed = 걸음 속도(m/s, 기본 1.2), marginSec = 여유 선호 c(초, 기본 0). 기본값이면 예전 결과와 완전히 같다.
  *   걸음 속도는 탐색(환승 가능 여부)과 확률(W)에 같이 쓴다: 느리면 시간표상 못 타는 환승이 생긴다.
@@ -156,37 +157,39 @@ export function planTrip(data, { origin, home, tag, nowSec, walkSpeed = BASE_WAL
     marginSec,
   };
 
-  const bestRes = searchJourney(net, tt, { startNodes: o.nodes, startSec: t0, homeNodes: h.nodes });
-  if (!bestRes) return emptyResult("no_route");
-
-  // 후보: 출발역 노드에서 t0 이후 출발하는 모든 연결(= 열차 출발)
+  // 후보: 출발역 노드에서 t0 이후 출발하는 모든 연결(= 열차 출발). 그 열차를 첫 열차로 고정한 후보 여정 중
+  // 출발역을 다시 지나는 여정을 빼고 귀가 확률이 가장 높은 여정을 고른다
   const originNodes = new Set(o.nodes);
   const seen = new Set();
   const cands = [];
   for (let c = lowerBound(tt.cDep, t0); c < tt.nConn; c++) {
     if (!originNodes.has(tt.cFrom[c])) continue;
-    const res = searchJourney(net, tt, { startSec: tt.cDep[c], homeNodes: h.nodes, firstConn: c });
-    if (!res || passesOriginAgain(tt, res.segments, originNodes)) continue;
-    const sig = journeySignature(res.segments);
+    const found = searchCandidates(net, tt, { startSec: tt.cDep[c], homeNodes: h.nodes, firstConn: c })
+      .filter((res) => !passesOriginAgain(tt, res.segments, originNodes));
+    const pick = chooseJourney(ctx, found, 0);
+    if (!pick) continue;
+    const sig = journeySignature(pick.res.segments);
     if (seen.has(sig)) continue;
     seen.add(sig);
-    const journey = makeJourney(ctx, res);
+    const journey = makeJourney(ctx, pick);
+    cands.push({ depart_sec: journey.depart_sec, arrive_sec: journey.arrive_sec, p_home: journey.p_home, journey });
+  }
+  if (!cands.length) {
+    // 첫 열차별 후보가 모두 빠진 경우(출발역을 다시 지나는 여정뿐 등): 출발역에서 자유 탐색한 후보 중 최선 하나
+    const pick = chooseJourney(ctx, searchCandidates(net, tt, { startNodes: o.nodes, startSec: t0, homeNodes: h.nodes }), 0);
+    if (!pick) return emptyResult("no_route");
+    const journey = makeJourney(ctx, pick);
     cands.push({ depart_sec: journey.depart_sec, arrive_sec: journey.arrive_sec, p_home: journey.p_home, journey });
   }
 
-  // 요약 화면의 대표 여정: 가장 일찍 도착하는 안 중 가장 먼저 떠나는 안(= 지금 출발해 처음 타는 열차).
-  // CSA 결과를 그대로 쓰면 같은 시각에 도착하는 더 늦은 출발이 뽑혀, 지금 떠나면 93%인데 "지금 출발해도 63%"로
-  // 보이는 경우가 있었다(서울역→강남 00:15 평일: 00:16 출발 93%, 00:27 출발 63%, 둘 다 00:54 도착).
-  const byHeadline = (a, b) => a.arrive_sec - b.arrive_sec || a.depart_sec - b.depart_sec
-    || a.journey.transfers.length - b.journey.transfers.length || b.p_home - a.p_home;
-  const best = cands.length ? [...cands].sort(byHeadline)[0].journey : makeJourney(ctx, bestRes);
-
   const kept = cands.filter((b, j) => !cands.some((a, i) => i !== j && dominates(a, b, i, j)));
-  // best 는 출발 시각 띠에서 빠지지 않게 한다. best 의 첫 열차 후보가 지배당해 빠졌으면(더 늦게 떠나 같은 시각에 닿는 안이 있는 경우)
-  // 다시 넣고, 같은 첫 열차 후보가 남아 있으면 best 여정으로 바꿔 요약 숫자와 칩 숫자를 맞춘다.
-  const bestOpt = { depart_sec: best.depart_sec, arrive_sec: best.arrive_sec, p_home: best.p_home, journey: best };
-  const others = kept.filter((x) => !sameFirstTrain(x.journey, best));
-  const all = [...others, bestOpt].sort((a, b) => a.depart_sec - b.depart_sec || a.arrive_sec - b.arrive_sec);
+  const all = kept.sort((a, b) => a.depart_sec - b.depart_sec || a.arrive_sec - b.arrive_sec);
+  // 요약 화면의 대표 여정: 남은 안 중 가장 먼저 떠나는 안(= 지금 출발해 처음 타는 열차, 도착이 같으면 이른 도착).
+  // 가장 이른 도착 여정을 대표로 쓰면 같은 시각에 도착하는 더 늦은 출발이 뽑혀, 지금 떠나면 93%인데 "지금 출발해도 63%"로
+  // 보이는 경우가 있었다(서울역→강남 00:15 평일: 00:16 출발 93%, 00:27 출발 63%, 둘 다 00:54 도착).
+  // 지배된 안은 빠지므로, 더 늦게 떠나 같거나 이른 시각에 같거나 높은 확률로 닿는 안이 있으면 그 안이 대표가 된다.
+  const bestOpt = all[0];
+  const best = bestOpt.journey;
 
   // 지배당한 안을 빼도 "가장 늦은 출발"은 남는다(그보다 늦게 떠나며 확률이 같거나 높은 안이 대신 남으므로)
   const latest = (ok) => {
@@ -204,13 +207,6 @@ export function planTrip(data, { origin, home, tag, nowSec, walkSpeed = BASE_WAL
     options,
     leave_by: { safe: latest((p) => p >= SAFE_P), last: latest((p) => p > 0) },
   };
-}
-
-// 두 여정의 첫 열차가 같은가(같은 열차를 같은 정차에서 탐)
-function sameFirstTrain(a, b) {
-  const ra = a.legs[0];
-  const rb = b.legs[0];
-  return ra.line === rb.line && ra.trip === rb.trip && ra.from_node === rb.from_node && ra.dep === rb.dep;
 }
 
 // 두 번째 이후 탑승 구간이 출발 물리 역을 다시 지나는가. 예: 개봉에서 반대 방향으로 한 정거장(오류동) 갔다가
