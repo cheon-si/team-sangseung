@@ -10,8 +10,8 @@ import LinePill from "./LinePill";
 // Citymapper "Get Me Home" 처럼 첫 화면에서 답을 끝낸다. 통계 설명은 넣지 않는다.
 // 모양은 레퍼런스 카드 문법: 흰 카드, 연한 칩 안 노선 번호, 연파랑 라벨 + 진한 값.
 export default function SummaryCard({
-  data, plan, journey, isBest, originId, homeId, clock, dayStatus, onRetryDay, serviceEnd,
-  onPickOrigin, onLocate, onShowRoute, onOpenTime,
+  data, plan, journey, isBest, originId, homeId, clock, dayStatus, onRetryDay, serviceEnd, lastChance,
+  onSelectDep, onPickOrigin, onLocate, onShowRoute, onOpenTime,
 }) {
   const p = journey?.p_home ?? null;
   const tone = plan?.status === "ok" ? toneOf(p) : plan?.status === "no_route" ? "danger" : "none";
@@ -28,7 +28,7 @@ export default function SummaryCard({
         <Body
           data={data} plan={plan} journey={journey} isBest={isBest} tone={tone} p={p}
           originId={originId} homeId={homeId} clock={clock} dayStatus={dayStatus} onRetryDay={onRetryDay} serviceEnd={serviceEnd}
-          onPickOrigin={onPickOrigin} onLocate={onLocate} onShowRoute={onShowRoute}
+          lastChance={lastChance} onSelectDep={onSelectDep} onPickOrigin={onPickOrigin} onLocate={onLocate} onShowRoute={onShowRoute}
         />
         {/* 21시 전: 오늘 밤 막차 기준으로 21:00 출발을 계산했다는 안내(엔진이 21:00 으로 올려 탐색) */}
         {plan?.status === "ok" && clock.nowSec < NIGHT_START && (
@@ -43,7 +43,7 @@ export default function SummaryCard({
   );
 }
 
-function Body({ data, plan, journey, isBest, tone, p, originId, homeId, clock, dayStatus, onRetryDay, serviceEnd, onPickOrigin, onLocate, onShowRoute }) {
+function Body({ data, plan, journey, isBest, tone, p, originId, homeId, clock, dayStatus, onRetryDay, serviceEnd, lastChance, onSelectDep, onPickOrigin, onLocate, onShowRoute }) {
   // 확증 전 잠정 결과면 큰 숫자 옆에도 밝힌다(delay_cdf.json meta.provisional)
   const provisional = useJson("delay_cdf")?.meta?.provisional;
   if (!originId) {
@@ -86,6 +86,25 @@ function Body({ data, plan, journey, isBest, tone, p, originId, homeId, clock, d
       same_station: ["이미 집 역이에요", "출발역을 바꿔 보세요."],
       unsupported: ["지원하지 않는 역이에요", "1~9호선 역만 계산할 수 있어요."],
     }[plan.status] ?? ["경로를 계산하지 못했어요", "잠시 뒤 다시 시도해 주세요."];
+    // 오늘 마지막 기회(작업 10-2): 21:00부터 다시 계산한 가장 늦은 출발. 이미 떠난 열차라 과거형 + "N분 전"을 같이 쓴다
+    if (plan.status === "no_route" && lastChance) {
+      const ago = shownMinutes(lastChance.depart_sec, clock.nowSec);
+      return (
+        <div>
+          <p className="text-[14px] font-semibold text-danger-ink">{ended ? "오늘 지하철 운행은 끝났어요" : "지금은 지하철로 집에 갈 수 없어요"}</p>
+          <p className="mt-1 text-[24px] leading-tight font-bold text-balance">
+            마지막 기회는 <span className="tabular-nums">{hhmm(lastChance.depart_sec)}</span> 출발이었어요
+          </p>
+          <p className="mt-1.5 text-[14px] text-muted">
+            {withYeok(originId)}에서 {ago > 0 ? `${untilText(ago * 60)} 전에 ` : "방금 "}떠났어요 · 그 열차의 귀가 확률{" "}
+            <b className={`tabular-nums ${TONE[toneOf(lastChance.p_home)].text}`}>{pctText(lastChance.p_home)}</b>. 아래에서 N버스·따릉이 위치를 확인하세요.
+          </p>
+          <button type="button" onClick={onShowRoute} className="mt-4 min-h-11 rounded-xl bg-chip px-4 text-sm font-semibold text-brand-ink">
+            대안 보기
+          </button>
+        </div>
+      );
+    }
     return (
       <div>
         <p className={`text-[24px] leading-tight font-bold text-balance ${plan.status === "no_route" ? "text-danger-ink" : ""}`}>{msg[0]}</p>
@@ -105,8 +124,10 @@ function Body({ data, plan, journey, isBest, tone, p, originId, homeId, clock, d
     ? `${hhmm(journey.depart_sec)} 출발하면`
     : !isNight ? "21:00 출발하면" : tone === "safe" ? "지금 출발하면" : "지금 출발해도";
   const relaxed = last && last.depart_sec - Math.max(clock.nowSec, NIGHT_START) > 3600; // 막차까지 1시간 넘게 남음(21시 전 포함)
+  // 막차 줄(작업 10-1): 지금 출발이 >99%여도 막차가 위험할 수 있어 따로 보여 준다. 고른 여정이 막차면 숨긴다
+  const showLast = last && last.depart_sec > journey.depart_sec;
   const verdict = relaxed && tone === "safe"
-    ? `아직 여유 · 막차 기준 출발 마감 ${hhmm(last.depart_sec)}`
+    ? showLast ? "아직 여유 있어요" : `아직 여유 · 막차 기준 출발 마감 ${hhmm(last.depart_sec)}`
     : !safe && tone !== "danger" ? "안전한 출발 마감은 지났어요" : HOME_TEXT[tone];
 
   return (
@@ -155,7 +176,29 @@ function Body({ data, plan, journey, isBest, tone, p, originId, homeId, clock, d
           </button>
         </div>
       </div>
+
+      {showLast && <LastTrainRow last={last} nowSec={clock.nowSec} isNight={isNight} onSelect={onSelectDep} />}
     </>
+  );
+}
+
+// 막차 줄: [막차] 00:27 출발하면 귀가 확률 30% · 12분 남음 >  누르면 추천 출발에서 그 막차를 고른다
+function LastTrainRow({ last, nowSec, isNight, onSelect }) {
+  const left = isNight && last.depart_sec >= nowSec ? shownMinutes(nowSec, last.depart_sec) : null;
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect?.(last.depart_sec)}
+      className="mt-3 flex min-h-11 w-full items-center gap-2 rounded-xl bg-canvas px-3 py-2 text-left text-[14px] hover:bg-chip/60"
+    >
+      <span className="shrink-0 rounded-full bg-danger-ink px-2 py-px text-[11px] leading-4 font-bold text-white">막차</span>
+      <span className="min-w-0 flex-1">
+        <b className="tabular-nums">{hhmm(last.depart_sec)}</b> 출발하면 귀가 확률{" "}
+        <b className={`tabular-nums ${TONE[toneOf(last.p_home)].text}`}>{pctText(last.p_home)}</b>
+        {left != null && <span className="text-muted tabular-nums"> · {untilText(left * 60)} 남음</span>}
+      </span>
+      <Icon name="chevronRight" className="h-4 w-4 shrink-0 text-muted" />
+    </button>
   );
 }
 

@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { HOLIDAYS, buildRouteData, loadRouteData, nearestStations, planTrip, serviceDayOf, timetableOf } from "./plan.js";
+import { HOLIDAYS, buildRouteData, lastChance, loadRouteData, nearestStations, planTrip, serviceDayOf, timetableOf } from "./plan.js";
 import { ARRIVAL_SLACK, searchCandidates } from "./csa.js";
 import { chooseJourney } from "./prob.js";
 
@@ -155,6 +155,13 @@ test("마지막 열차 뒤면 no_route, 같은 역이면 same_station, 모르는
   assert.deepEqual(planTrip(data, { origin: "X", home: "X", tag: "DAY", nowSec: 82000 }), { status: "same_station", ...empty });
   assert.deepEqual(planTrip(data, { origin: "없는역", home: "H", tag: "DAY", nowSec: 82000 }), { status: "unsupported", ...empty });
   assert.deepEqual(planTrip(data, { origin: "O", home: "H", tag: "HOL", nowSec: 82000 }), { status: "unsupported", ...empty });
+});
+
+test("lastChance: 경로 없음이면 21:00부터 다시 계산한 가장 늦은 출발(leave_by.last), 21:00부터도 없으면 null", () => {
+  const last = lastChance(data, { origin: "O", home: "H", tag: "DAY", nowSec: 86000 });
+  assert.equal(last.depart_sec, 84600);
+  close(last.p_home, 0.75);
+  assert.equal(lastChance(buildRouteData(makeRaw([])), { origin: "O", home: "H", tag: "DAY", nowSec: 86000 }), null);
 });
 
 test("options 는 최대 12개, 마지막 가능한 출발까지 포함(best 가 잘리면 맨 앞에 두고 나머지 11개)", () => {

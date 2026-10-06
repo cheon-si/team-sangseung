@@ -209,6 +209,16 @@ export function planTrip(data, { origin, home, tag, nowSec, walkSpeed = BASE_WAL
   };
 }
 
+/**
+ * 경로 없음일 때 "오늘 마지막 기회"(plan.md 작업 10-2): 같은 입력·설정으로 21:00부터 다시 계산해
+ * 가장 늦게 탈 수 있었던 출발(leave_by.last = { depart_sec, p_home }). 21:00부터도 경로가 없으면 null.
+ * planTrip 결과는 바꾸지 않는 보조 함수다(check_route.py 일치 검증 대상 아님).
+ */
+export function lastChance(data, input) {
+  const r = planTrip(data, { ...input, nowSec: WINDOW_START });
+  return r.status === "ok" ? r.leave_by.last : null;
+}
+
 // 두 번째 이후 탑승 구간이 출발 물리 역을 다시 지나는가. 예: 개봉에서 반대 방향으로 한 정거장(오류동) 갔다가
 // 개봉을 다시 지나 돌아오는 여정. 그 역에서 나중 열차를 바로 타는 후보가 따로 있으므로 options 후보에서 뺀다.
 function passesOriginAgain(tt, segments, originNodes) {

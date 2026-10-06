@@ -16,7 +16,7 @@ import { THRESHOLDS } from "../config";
 import { useJson } from "../data";
 import { hhmm, pctText, shownMinutes, TONE, toneOf, untilText, withYeok } from "../format";
 import { loadSaved, paceOptions, saveValue } from "../settings";
-import { nearestId, nearestStations, serviceDayOf, serviceEndOf, stationById, useDayData, usePlan } from "../usePlan";
+import { nearestId, nearestStations, serviceDayOf, serviceEndOf, stationById, useDayData, useLastChance, usePlan } from "../usePlan";
 
 const DAY_SHORT = { DAY: "평일", SAT: "토요일", END: "휴일" };
 const TABBAR_H = 68; // 하단 탭바 높이(안전 영역 제외). 모바일 시트는 이 위에 놓인다
@@ -57,9 +57,11 @@ export default function MainScreen({
   const [headerH, setHeaderH] = useState(176); // 모바일 헤더 높이: 지도 위 여백·알림 위치에 쓴다
 
   const po = paceOptions(pace);
-  const plan = usePlan(day.data, {
+  const planInput = {
     origin: origin?.id, home, tag: clock.tag, nowSec: clock.nowSec, walkSpeed: po.walkSpeed, marginSec: po.marginSec,
-  });
+  };
+  const plan = usePlan(day.data, planInput);
+  const lastChance = useLastChance(day.data, plan, planInput); // 경로 없음일 때 오늘 마지막으로 탈 수 있었던 출발
   const serviceEnd = day.data ? serviceEndOf(day.data, clock.tag) : null; // 그 요일 마지막 열차 출발
 
   // ── 고른 여정 ──
@@ -158,8 +160,8 @@ export default function MainScreen({
   const summary = (
     <SummaryCard
       data={data} plan={plan} journey={journey} isBest={isBest} originId={origin?.id} homeId={home} clock={clock}
-      dayStatus={day.status} onRetryDay={day.retry} serviceEnd={serviceEnd}
-      onPickOrigin={() => setModal("origin")} onLocate={() => locate(true)}
+      dayStatus={day.status} onRetryDay={day.retry} serviceEnd={serviceEnd} lastChance={lastChance}
+      onSelectDep={setSelDep} onPickOrigin={() => setModal("origin")} onLocate={() => locate(true)}
       onShowRoute={showRoute} onOpenTime={() => setModal("time")}
     />
   );

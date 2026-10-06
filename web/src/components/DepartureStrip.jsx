@@ -3,7 +3,21 @@ import { hhmm, pctText, shownMinutes, TONE, toneOf, untilText } from "../format"
 import Icon from "./Icon";
 import { RouteChips } from "./SummaryCard";
 
-const VISIBLE = 3; // 접힌 상태에서 보여 줄 카드 수(고른 출발이 항상 그 안에 들어가게 자른다)
+const VISIBLE = 3; // 접힌 상태에서 보여 줄 최소 카드 수
+
+// 접힌 상태에서 보여 줄 카드 위치(작업 10-3): 지금(첫 안)·고른 출발·안전 마감·막차는 항상 넣고(최대 4장),
+// VISIBLE 장이 안 되면 고른 출발 다음 안, 그다음 앞 안으로 채운다. 예전에는 고른 출발 주변 3장만 보여 막차 카드가 가려졌다
+function collapsedPicks(options, selIdx, safeDep, lastDep) {
+  const want = new Set([0, selIdx]);
+  for (const dep of [safeDep, lastDep]) {
+    const i = options.findLastIndex((o) => o.depart_sec === dep);
+    if (i >= 0) want.add(i);
+  }
+  const n = Math.min(VISIBLE, options.length);
+  for (let i = selIdx + 1; want.size < n && i < options.length; i++) want.add(i);
+  for (let i = selIdx - 1; want.size < n && i >= 0; i--) want.add(i);
+  return [...want].sort((a, b) => a - b);
+}
 
 // 추천 출발(레퍼런스 "Suggested Routes" 카드 목록): 출발 시각마다 카드 한 장.
 // 도보 > [노선 칩] · 소요 · 출발 시각(N분 후) · 티켓 자리에 귀가 확률(판정 색).
@@ -14,8 +28,7 @@ export default function DepartureStrip({ data, options, selectedDep, leaveBy, no
   const safeDep = leaveBy?.safe?.depart_sec;
   const lastDep = leaveBy?.last?.depart_sec;
   const selIdx = Math.max(0, options.findIndex((o) => o.depart_sec === selectedDep));
-  const start = Math.max(0, Math.min(selIdx - 1, options.length - VISIBLE));
-  const shown = all ? options : options.slice(start, start + VISIBLE);
+  const picks = all ? options.map((_, i) => i) : collapsedPicks(options, selIdx, safeDep, lastDep);
 
   return (
     <section className="px-3 pt-5" aria-labelledby="strip-title">
@@ -24,7 +37,9 @@ export default function DepartureStrip({ data, options, selectedDep, leaveBy, no
         <span className="text-[12px] text-muted">시각은 시간표 · %는 실측 지연 기반</span>
       </div>
       <ul className="mt-2.5 grid gap-2.5">
-        {shown.map((o, i) => {
+        {picks.map((idx, k) => {
+          const o = options[idx];
+          const gap = k > 0 && idx - picks[k - 1] > 1; // 접힌 상태에서 사이에 숨은 출발이 있으면 ⋯ 로 표시
           const tone = toneOf(o.p_home);
           const on = o.depart_sec === selectedDep;
           const tag = o.depart_sec === lastDep ? "막차" : o.depart_sec === safeDep ? "마감" : null;
@@ -32,7 +47,12 @@ export default function DepartureStrip({ data, options, selectedDep, leaveBy, no
           const wait = waitMin == null ? null : waitMin === 0 ? "지금 출발" : `${untilText(waitMin * 60)} 후`;
           // key 에 순서를 붙인다: 반대 방향 두 열차가 같은 시각에 떠나면 출발 시각이 겹친다
           return (
-            <li key={`${o.depart_sec}-${i}`}>
+            <li key={`${o.depart_sec}-${idx}`}>
+              {gap && (
+                <div className="-mt-1 mb-1.5 text-center text-[12px] leading-none text-muted" aria-hidden="true">
+                  ⋯ {idx - picks[k - 1] - 1}개
+                </div>
+              )}
               <button
                 type="button"
                 aria-pressed={on}
@@ -72,7 +92,7 @@ export default function DepartureStrip({ data, options, selectedDep, leaveBy, no
           );
         })}
       </ul>
-      {options.length > VISIBLE && (
+      {picks.length < options.length || all ? (
         <button
           type="button"
           aria-expanded={all}
@@ -82,7 +102,7 @@ export default function DepartureStrip({ data, options, selectedDep, leaveBy, no
           {all ? "접기" : `출발 시각 ${options.length}개 모두 보기`}
           <Icon name="chevronDown" className={`h-4 w-4 transition-transform ${all ? "rotate-180" : ""}`} />
         </button>
-      )}
+      ) : null}
     </section>
   );
 }

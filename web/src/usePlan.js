@@ -121,6 +121,35 @@ function planCached(data, input) {
   return result;
 }
 
+// 경로 없음일 때 "오늘 마지막 기회"(plan.md 작업 10-2): 같은 설정으로 21:00부터 다시 계산한 가장 늦은 출발 { depart_sec, p_home }.
+// 21:00부터 모든 출발을 탐색해 휴대폰에서 수백 ms 걸릴 수 있으므로, 요약 카드를 먼저 그린 뒤 계산한다.
+// 반환: undefined = 계산 중(또는 필요 없음), null = 21:00부터도 경로 없음
+const lastChanceCache = new WeakMap(); // 엔진 data → Map(입력 키 → 결과)
+
+export function useLastChance(data, plan, { origin, home, tag, nowSec, walkSpeed = engine.BASE_WALK_SPEED, marginSec = 0 }) {
+  const need = !!data && plan?.status === "no_route" && nowSec > NIGHT_START;
+  const key = need ? [origin, home, tag, walkSpeed, marginSec].join("|") : null;
+  const cached = key ? lastChanceCache.get(data)?.get(key) : undefined;
+  const [, setDone] = useState(0);
+  useEffect(() => {
+    if (!key || cached !== undefined) return;
+    const id = setTimeout(() => {
+      let cache = lastChanceCache.get(data);
+      if (!cache) lastChanceCache.set(data, (cache = new Map()));
+      let last = null;
+      try {
+        last = engine.lastChance(data, { origin, home, tag, nowSec, walkSpeed, marginSec });
+      } catch (error) {
+        console.error("lastChance 실패", error);
+      }
+      cache.set(key, last);
+      setDone((n) => n + 1);
+    }, 0);
+    return () => clearTimeout(id);
+  }, [data, key, cached, origin, home, tag, nowSec, walkSpeed, marginSec]);
+  return cached;
+}
+
 // 위험한 환승역 화면: 막차 조합표 행(p_b 등은 기본 설정 값)을 걸음 속도·여유 선호로 다시 계산한 행 목록.
 // 기본 설정이면 원래 행 그대로. 다시 계산하면 p_b·s90_sec·slack_b_sec·buffer_sec·walk_sec 를 덮어쓴다(엔진 rowProbB, 경로와 같은 규칙)
 export function rowsForPace(rawModel, rows, { walkSpeed, marginSec, isDefault }) {
