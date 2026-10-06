@@ -13,7 +13,7 @@ export default function HomeSetup({ data, onPick, onPreset }) {
         {/* 헤더 글씨는 붓질이 진한 왼쪽에 둔다(오른쪽 연하늘 위 흰 글씨는 대비 부족). 설명 문장은 흰 카드 안으로 */}
         <header className="brand-header shrink-0 rounded-b-[32px] px-5 pt-[max(env(safe-area-inset-top),16px)] pb-16">
           <span className="header-pill inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[13px] font-bold">
-            <Icon name="train" className="h-4 w-4" /> 막차될까
+            <Icon name="train" className="h-4 w-4" /> 막차타KU
           </span>
           <h1 className="mt-5 text-[27px] leading-snug font-extrabold [text-shadow:0_1px_3px_rgb(21_101_192/0.45)]">
             집이 어느 역

@@ -119,7 +119,7 @@ export default function App() {
 function Splash({ text, onRetry }) {
   return (
     <div className="flex h-dvh flex-col items-center justify-center gap-2 bg-canvas px-6 text-center">
-      <p className="text-[15px] font-extrabold tracking-wide text-brand-ink">막차될까</p>
+      <p className="text-[15px] font-extrabold tracking-wide text-brand-ink">막차타KU</p>
       <p className="text-[15px] text-muted" role={onRetry ? "alert" : "status"}>{text}</p>
       {onRetry && (
         <button type="button" onClick={onRetry} className="mt-3 min-h-12 rounded-2xl bg-brand-strong px-6 font-bold text-white">
