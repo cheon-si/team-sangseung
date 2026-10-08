@@ -103,6 +103,18 @@ jobs:
           done
           cp logs/collect.log "collected/$day/collect.log" 2>/dev/null || true
           ls -la "collected/$day"
+          echo "COLLECTED_DAY=$day" >> "$GITHUB_ENV"
+
+      # push가 실패해도 그 밤을 잃지 않도록 압축본을 아티팩트로도 남긴다(그 밤 폴더만, 7일 보존).
+      # 10/7 밤: 수집은 끝까지 됐는데 push가 GitHub 500 에러로 거부돼 러너와 함께 하룻밤이 사라졌다.
+      # 복구: gh run download <run id> -n collected-<운영일> -D collected/<운영일> 후 커밋
+      - name: 수집분 아티팩트 보관
+        if: always() && env.COLLECTED_DAY != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: collected-${{ env.COLLECTED_DAY }}
+          path: collected/${{ env.COLLECTED_DAY }}
+          retention-days: 7
 
       - name: 저장소에 커밋
         if: always()
@@ -114,6 +126,12 @@ jobs:
             echo "커밋할 변경 없음"; exit 0
           fi
           git commit -m "collect: $(date +%Y-%m-%d) night"
-          # 예약 실행 사이에 누군가 push했을 수 있으니 rebase 후 push
-          git pull --rebase origin "${GITHUB_REF_NAME}" || true
-          git push origin HEAD:"${GITHUB_REF_NAME}"
+          # 예약 실행 사이에 누군가 push했을 수 있으니 rebase 후 push.
+          # GitHub 쪽 일시 오류(10/7 밤 500)에 대비해 30초 간격으로 3번까지 다시 시도한다
+          for i in 1 2 3; do
+            git pull --rebase origin "${GITHUB_REF_NAME}" || true
+            if git push origin HEAD:"${GITHUB_REF_NAME}"; then exit 0; fi
+            echo "push 실패 ($i/3)"
+            [ "$i" -lt 3 ] && sleep 30
+          done
+          echo "push 최종 실패: 아티팩트 collected-${COLLECTED_DAY}에서 복구"; exit 1
