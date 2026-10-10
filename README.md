@@ -1,105 +1,113 @@
-# 막차 러시아룰렛 · 수집기
+# 막차타KU · 서울 지하철 막차 환승 성공 확률
 
-2026 통계최강자전 팀 상승. 서울 지하철 심야 실시간 데이터를 4주간 수집한다.
+2026 통계최강자전 팀 상승.
 
-**실시간 데이터는 과거분을 다시 받을 수 없다.** 수집이 하루 끊기면 그날 밤은 영영 사라진다.
+서울 지하철 1~9호선의 심야 실시간 열차 위치·도착 정보를 직접 수집했다. 이 자료로 **막차로 갈아탈 때 실제로 탈 수 있을 확률**을 추정했고, 그 결과를 귀가 경로 웹앱으로 만들었다.
+
+- **웹앱**: https://makchataku.vercel.app
+- 출발역(현위치)과 집 역을 넣으면 경로, 귀가 확률, 출발 마감이 나온다. 걸음 속도와 여유 선호를 바꿀 수 있다.
 
 ---
 
-## 0. 지금 당장 필요한 것
+## 결과 요약
 
-**서울 열린데이터광장 인증키 두 개.** 하나가 아니다. 도메인이 다르면 키도 다르다.
+| 항목 | 내용 |
+|---|---|
+| 수집 | 2026-09-16 ~ 10-09 매일 22:00~02:00, 3분 간격. 21밤(9/17, 9/26, 10/7 없음) |
+| 주 모형 (팀 B 모형) | 지연 차이 Δ(막차 출발 지연 − 내 열차 도착 지연)를 다중회귀(도착·환승 노선, 요일, 경과 운행시간)로 예측하고, 잔차의 경험분포로 성공 확률 P(시간표 여유 + Δ ≥ 0)를 계산 |
+| 학습 | 9/16~10/1 13밤, 1~9호선 환승 111개 조합의 막차 연결 4,160행. R² 0.096: 지연 차이 대부분이 그날 밤의 우연이라 "탈 수 있다/없다" 대신 확률로 안내한다 |
+| 검증 (13밤, 밤 단위 교차검증) | Brier: 시간표만 보는 판단 0.0913 → B 모형 0.0544 (40% 감소), 13밤 모두 개선 |
+| 외부 검증 (학습에 안 쓴 10/2 이후 7밤) | Brier: 0.0608 → 0.0492 (19.0% 감소, 밤 단위 붓스트랩 95% 구간 3.3~26.2%), 7밤 중 4밤 개선. 평가 행 범위가 달라 위 40%와 직접 비교하지 않는다. [holdout_7nights.md](holdout_7nights.md) |
+| 핵심 발견 | 8·9호선 막차는 시간표에 가깝게 떠난다(1호선 막차 대비 여유 −112초·−88초). 90% 확률로 타려면 시간표 여유가 8호선 2분 10초, 9호선 2분 5초 이상 필요하다(평일 중앙값). 평일 마지막 연결 1,299개 중 166개(12.8%)는 성공 확률이 90% 미만이다 |
+
+한계: 평범한 밤 기준이라 사고나 대형 지연은 예측하지 못한다. 환승이 여럿이면 환승끼리 서로 독립이라고 가정한다. 분석 대상은 서울교통공사 운영 1~9호선이다(코레일 연장 구간의 환승역 포함, 신분당선·경의중앙선·공항철도 제외).
+
+---
+
+## 구성
+
+```
+수집 (GitHub Actions, collect.py)
+  → collected/YYYYMMDD/*.jsonl.gz
+분석 파이프라인 (run_pipeline.py)
+  → 전처리 · 막차 쌍 · 밤별 점검 · 실측 Y · 지연 분포 · 검증
+웹앱 데이터 (export_for_app.py)
+  → B 모형 · 경로망 · 시간표 · 막차 조합표 (web/public/data/*.json)
+웹앱 (web/, Vite + React, 카카오맵)
+  → 브라우저 안에서 경로 탐색 + 귀가 확률 계산 → Vercel 배포
+```
+
+| 파일 | 역할 |
+|---|---|
+| `collect.py`, `.github/workflows/collect.yml` | 심야 실시간 수집 (아래 "수집기 운영") |
+| `fetch_reference.py`, `fetch_aux.py`, `fetch_notice.py` | 역 마스터·막차 시간표·보조 자료·운행 공지 |
+| `preprocess.py`, `common.py`, `utils.py` | 전처리(원 스탬프 → 열차·역별 도착/출발 사건, 시간표 매칭) |
+| `lasttrain.py` | 환승역별 막차 연결(조합) 목록 |
+| `night_qa.py` | 밤별 수집 품질 점검 |
+| `label_y.py` | 막차 환승 실측 성공 여부(Y) |
+| `fit_delay.py`, `validate.py` | 지연 분포 적합과 B 채택 전 모형(2차 합성곱) 검증 |
+| `export_model_b.py` | 팀 B 공통테이블로 B 모형 적합 → `model_b.json` |
+| `export_route.py`, `export_for_app.py`, `build_station_alt.py` | 웹앱 JSON(경로망, 시간표, 막차 조합표, 역 대안) |
+| `check_route.py` | 웹앱 경로 엔진의 Python 기준 구현(결과 대조) |
+| `holdout_b.py` | 새 7밤 외부 검증 |
+| `web/src/route/` | 브라우저 경로 엔진(라운드 방식 CSA, 놓친 뒤 재탐색까지 포함한 귀가 확률), `node --test` 테스트 |
+| `plan.md`, `웹앱_설계.md`, `프로젝트_방향_결정.md` 등 | 작업 계획·설계·결정 기록 |
+
+## 재현
+
+```bash
+# 분석 (Python 3.11)
+python -m pip install -r requirements-analysis.txt
+python run_pipeline.py          # collected/ 전체 → data/processed/, output/, web/public/data/
+python holdout_b.py             # 외부 검증
+
+# 웹앱
+cd web
+npm install
+cp .env.example .env.local      # VITE_KAKAO_JS_KEY 에 카카오맵 JavaScript 키
+npm run dev                     # http://localhost:3000
+node --test "src/route/*.test.js"
+```
+
+- B 모형 적합(`export_model_b.py`)은 팀 B 공통테이블(`../B/공통테이블_v3.1.csv`, 저장소 밖)을 읽는다.
+- Windows에서 출력을 파일로 보낼 때는 `PYTHONUTF8=1`을 켠다(cp949 콘솔 인코딩 오류 방지).
+
+---
+
+## 수집기 운영 (기록)
+
+**실시간 데이터는 과거분을 다시 받을 수 없다.** 수집이 하루 끊기면 그날 밤은 영영 사라진다. 수집은 10/9 밤으로 끝났고, 예약 워크플로(`collect-night`)는 10/10에 비활성화했다.
+
+### 인증키
+
+서울 열린데이터광장 인증키가 두 개 필요하다. 도메인이 다르면 키도 다르다.
 
 | 키 | 도메인 | 쓰는 곳 | 환경변수 |
 |---|---|---|---|
 | 실시간 지하철 인증키 | `swopenapi.seoul.go.kr` | 야간 수집 (`collect.py`) | `SEOUL_SUBWAY_KEY` |
 | 일반 인증키 | `openapi.seoul.go.kr:8088` | 참조 데이터 (`fetch_reference.py`) | `SEOUL_API_KEY` |
 
-서로 바꿔 넣으면 인증 오류가 난다. 샘플키는 모든 API에서 5행까지만 주므로 실수집에 쓸 수 없다.
+- 서로 바꿔 넣으면 인증 오류(`INFO-100`)가 난다. 샘플키는 모든 API에서 5행까지만 준다.
+- 발급: https://data.seoul.go.kr 회원가입 → [Open API 소개](https://data.seoul.go.kr/together/guide/useGuide.do)에서 '일반 인증키 신청'과 '실시간 지하철 인증키 신청'을 각각 누른다.
+- `cp .env.example .env` 후 값을 채운다. `.env`는 git에 올라가지 않는다.
 
-### 발급 절차
+**웹앱 지도 키(카카오맵 JavaScript 키)**
+- `web/.env.example`을 `web/.env.local`로 복사해 채운다.
+- Kakao Developers > 앱 > 플랫폼 > Web 사이트 도메인에 `http://localhost:3000`과 배포 도메인을 등록한다.
+- Vercel에는 Settings > Environment Variables에 `VITE_KAKAO_JS_KEY`를 넣는다. 빠지면 지도 자리에 "지도를 불러오지 못했어요"가 뜬다(경로·확률은 그대로 동작).
+- JavaScript 키는 브라우저 번들에 들어가는 공개 전제 키다. 사용처 제한은 도메인 등록으로 한다.
 
-1. https://data.seoul.go.kr 회원가입
-2. [Open API 소개](https://data.seoul.go.kr/together/guide/useGuide.do) 페이지에서 **'일반 인증키 신청'과 '실시간 지하철 인증키 신청'을 각각** 누른다. 둘 다 즉시 발급된다.
-3. 프로젝트 폴더에서:
+### 수집기 실행
 
-```bash
-cp .env.example .env
-```
-
-`.env`를 열어 두 키를 채운다. PowerShell 세션 변수로도 된다.
-
-```powershell
-$env:SEOUL_SUBWAY_KEY = "실시간지하철키"
-$env:SEOUL_API_KEY = "일반키"
-```
-
-4. **활용사례(갤러리) 등록**도 신청한다. 실시간 지하철 API의 일일 1,000건 제한이 심사 후 풀린다. 당장은 제한 안에서 돌아가지만, 풀리면 수집 간격을 촘촘하게 할 수 있다.
-
-### 나중에 필요한 키
-
-**공공데이터포털(data.go.kr) 키** — 열린데이터광장과 완전히 별개의 사이트다. 기상 데이터를 지연 설명 변수로 넣기로 하면 그때 발급받으면 된다. 노선별 지연시간 CSV는 로그인 후 브라우저로 직접 내려받으면 되므로 키가 필요 없다.
-
-### 웹앱 지도 키 (카카오맵 JavaScript 키)
-
-- `web/.env.example`을 `web/.env.local`로 복사해 `VITE_KAKAO_JS_KEY=`에 Kakao Developers에서 발급한 **JavaScript 키**를 넣는다. `*.local`은 git에 안 올라간다.
-- Kakao Developers > 앱 > 플랫폼 > Web 사이트 도메인에 `http://localhost:3000`(개발 서버 포트, `web/vite.config.js`)과 배포 도메인(Vercel)을 등록한다. 등록이 없으면 지도 로드가 시간 초과로 실패한다.
-- Vercel 배포: `.env.local`은 올라가지 않으므로 Vercel 프로젝트 Settings > Environment Variables에 `VITE_KAKAO_JS_KEY`를 넣고 다시 배포한다. 빠지면 지도 자리에 "지도를 불러오지 못했어요"가 뜬다(경로·확률 시트는 그대로 동작).
-- JavaScript 키는 브라우저 번들에 그대로 들어가는 공개 전제 키다. 사용처 제한은 위 도메인 등록으로 한다.
-
----
-
-## 1. 설치
-
-추가 라이브러리가 없다. 파이썬 표준 라이브러리만 쓴다.
+수집기(`collect.py`, `fetch_reference.py`)는 파이썬 표준 라이브러리만 쓴다. 분석 파이프라인은 위 `requirements-analysis.txt`가 필요하다.
 
 ```bash
-C:\Users\ASUS\AppData\Local\Programs\Python\Python311\python.exe --version
-```
-
----
-
-## 2. 동작 확인
-
-키 없이 파싱 로직만 검증한다. 파일에 아무것도 쓰지 않는다.
-
-```bash
-python collect.py --dry-run --no-bulk
-```
-
-9개 노선에서 각 5행씩 45행이 나오면 정상이다.
-
----
-
-## 3. 참조 데이터 (키 발급 후 1회)
-
-역 마스터를 먼저 받아야 나머지가 돌아간다.
-
-```bash
+python collect.py --dry-run --no-bulk   # 키 없이 파싱만 확인(9개 노선 × 5행 = 45행이면 정상)
 python fetch_reference.py --step master
 python fetch_reference.py --step lasttrain --limit 800
-python fetch_reference.py --step timetable --limit 800
+python fetch_reference.py --step timetable --limit 800   # 이미 받은 조합은 건너뛴다
+python collect.py                        # 22:00~02:00, 3분 간격
 ```
-
-역 × 요일 × 방향 조합이 많아 한 번에 다 못 받는다. **이미 받은 조합은 건너뛰므로 며칠에 나눠 돌려도 된다.** 같은 명령을 다시 치면 이어서 진행한다.
-
-| 단계 | 대상 | 대략 호출 수 |
-|---|---|---:|
-| master | 전체 역 799건 | 1 |
-| lasttrain | 서울교통공사 운영 역 × 요일 3 × 방향 2 | 약 1,800 |
-| timetable | 환승역만 × 요일 3 × 방향 2 | 대상 수에 따라 변동 |
-
-막차 시간표가 분석의 기준선이므로 `lasttrain`을 먼저 끝낸다.
-
----
-
-## 4. 야간 수집
-
-```bash
-python collect.py
-```
-
-22:00부터 다음 날 02:00까지 3분 간격으로 수집한다. 창 시작 전에 실행하면 시작까지 대기한다.
 
 | 옵션 | 기본값 | 설명 |
 |---|---|---|
@@ -110,99 +118,35 @@ python collect.py
 | `--once` | | 1회만 수집하고 종료 |
 | `--no-bulk` | | 도착정보 일괄 조회 건너뛰기 |
 
-### 호출 예산
+**호출 예산**: 틱당 10콜(노선별 위치 9 + 도착 일괄 1) × 80틱(3분 간격 × 240분) = 800콜. 일일 한도는 1,000건이다. 창을 02:00까지 잡은 이유는 평일 최종 도착이 25:14라서다. 01:00에 끊으면 2·4·7·9호선 막차의 종착 도착을 놓친다.
 
-일일 한도가 1,000건이고 기본 설정은 950에서 멈춘다.
-
-- 노선별 열차 위치 9콜 + 도착정보 일괄 1콜 = 틱당 10콜
-- 3분 간격 × 240분 = 80틱 → 800콜
-
-창을 02:00까지 잡은 이유: 운행시각표 기준 평일 최종 도착이 25:14다. 01:00에 끊으면 2·4·7·9호선 막차의 종착 도착을 놓친다.
-
-일괄 조회가 400이나 500을 돌려주면 `--no-bulk`로 끄고 위치정보만 모은다. 로그에 기록되므로 첫날 밤 확인할 것.
-
-### 인증 오류가 날 때
-
-키를 서로 바꿔 넣었을 가능성을 먼저 본다. `collect.py`는 실시간 지하철 키, `fetch_reference.py`는 일반 키다. 로그에 `INFO-100`(인증키 오류)이 찍히면 이 경우다.
-
----
-
-## 5. 결과물
+### 결과물
 
 ```
-data/raw/position_20260915.jsonl    노선별 열차 위치 원본
-data/raw/arrival_20260915.jsonl     전체 역 도착정보 원본
-data/reference/station_master.json  역 마스터
-data/reference/last_train.jsonl     막차 시간표
-data/reference/timetable.jsonl      역별 시간표
-data/call_budget.json               운영일별 누적 호출 수
-logs/collect.log                    수집 로그 (실패 포함)
-collected/YYYYMMDD/*.jsonl.gz       GitHub Actions가 커밋한 하룻밤 수집분 (압축)
-collected/YYYYMMDD/collect.log      그 밤의 수집 로그
+collected/YYYYMMDD/{position,arrival}_YYYYMMDD.jsonl.gz   GitHub Actions가 커밋한 하룻밤 수집분 (gzip, 약 8~10MB)
+collected/YYYYMMDD/collect.log                            그 밤의 수집 로그
+data/reference/   역 마스터, 막차 시간표, 역별 시간표 (로컬 전용)
+data/raw/, logs/  로컬 수집 원본과 로그 (로컬 전용)
 ```
 
-`data/`와 `logs/`는 로컬 전용이라 git에 안 올라갑니다. GitHub Actions에서 돌린 밤은 `collected/`에만 남습니다.
+- 응답 원본을 그대로 남기고 각 행에 `_collected_at`(수집 시각), `_service_date`(운영일, 새벽 4시 기준), `_line_query`(요청 노선)를 덧붙인다.
+- 전처리에서 뭘 잘못해도 원본에서 다시 시작할 수 있게 한 구조다.
 
-응답 원본을 그대로 남기고 각 행에 세 개 필드를 덧붙인다.
+### 팀 합의 사항
 
-- `_collected_at` 수집 시각
-- `_service_date` 운영일 (새벽 4시 기준. 22시~익일 1시가 한 파일로 묶인다)
-- `_line_query` 요청한 노선명
+- **자정 넘김 시각은 `utils.parse_service_time`만 쓴다.** 막차 시각이 `24:48:00`으로 온다.
+- **운영일은 `utils.service_date`로 구한다.** 새벽 4시 이전은 전날로 친다.
+- 실시간과 시간표의 역 코드 체계가 달라(`1001000133` 대 `0150`·`133`) 전처리(`preprocess.py`)에서 역 이름·노선 기준으로 맞춘다.
 
-전처리에서 뭘 잘못해도 원본에서 다시 시작할 수 있게 한 구조다.
-
----
-
-## 6. 팀 합의 사항
-
-**자정 넘김 시각은 `utils.parse_service_time`만 쓴다.** 막차 시각이 `24:48:00`으로 온다. 각자 따로 처리하면 지연 계산이 하루씩 어긋난다.
-
-**운영일은 `utils.service_date`로 구한다.** 새벽 4시 이전은 전날로 친다.
-
-**분석 대상은 서울교통공사 운영 1~9호선으로 한정한다.** 시간표와 막차, 환승소요시간 API가 이 범위만 제공한다. 코레일 연장 구간, 신분당선, 경의중앙선, 공항철도는 빠진다. **보고서 앞부분에 먼저 밝힐 것.** 나중에 지적당하는 것보다 스스로 밝히는 쪽이 유리하다.
-
-**역코드 매핑을 아직 검증하지 않았다.** 실시간은 `1001000133`, 시간표는 `0150`과 `133`을 쓴다. 끝 세 자리가 일치하는 패턴이 보이지만 `P148`처럼 문자가 섞인 코드가 있다. 799건 전수 대조가 수집 첫 주 최우선 작업이다.
-
----
-
-## 7. 어디서 돌리나
-
-**기본은 GitHub Actions입니다.** 노트북은 잠들거나 꺼지면 그날 밤이 통째로 사라지지만, 러너는 항상 켜져 있습니다. 공개 저장소라 실행 시간 제한도 없습니다.
+### GitHub Actions 수집
 
 | 항목 | 값 |
 |---|---|
-| 워크플로 | `.github/workflows/collect.yml` |
-| 예약 | 매일 14:00~21:00 KST 매시 정각, 8개. GitHub 예약이 4시간 15분~6시간 39분 늦게 뜨고(9/17~9/24 실측) 폭이 매일 달라 여러 개를 건다. 창 시작 1.5시간 전보다 일찍 뜬 실행은 21:00까지(최대 5시간씩) 기다렸다가 새 실행을 요청하고 끝남(릴레이), 그 안에 뜨면 기다렸다 수집. 02:00~12:00에 뜬 실행은 어젯밤 수집분이 없을 때만 실패로 표시. 수집 중에 뜬 실행은 대기열에서 취소(회색)되거나 02:00 이후 바로 종료되므로 정상 |
-| 시간대 | `TZ: Asia/Seoul`. 이걸 빼면 러너가 UTC로 돌아 22:00 대기가 다음 날 아침 7시를 겨냥함 |
+| 워크플로 | `.github/workflows/collect.yml` (10/10부터 비활성) |
+| 예약 | 매일 14:00~21:00 KST 매시 정각, 8개. GitHub 예약이 4시간 15분~6시간 39분 늦게 뜨고(9/17~9/24 실측) 폭이 매일 달라 여러 개를 걸었다. 창 시작 1.5시간 전보다 일찍 뜬 실행은 21:00까지 기다렸다가 새 실행을 요청하고 끝난다(릴레이). 02:00~12:00에 뜬 실행은 어젯밤 수집분이 없을 때만 실패로 표시한다 |
+| 시간대 | `TZ: Asia/Seoul`. 빼면 러너가 UTC로 돌아 22:00 대기가 다음 날 아침 7시를 겨냥한다 |
 | 키 | 저장소 Secrets `SEOUL_SUBWAY_KEY`, `SEOUL_API_KEY` |
-| 결과 | 수집분을 gzip해 `collected/YYYYMMDD/`에 커밋. 하룻밤 약 20MB |
-| 실패 대비 | 수집이 중간에 죽어도 그때까지 받은 것은 커밋됨 (`if: always()`) |
+| 결과 | 수집분을 gzip해 `collected/YYYYMMDD/`에 커밋한다 |
+| 실패 대비 | 수집이 중간에 죽어도 그때까지 받은 것은 압축·커밋한다(`if: always()`). 10/7 밤에 push가 GitHub 500 에러로 거부돼 하룻밤을 잃은 뒤로는 그 밤 폴더를 아티팩트(7일 보존)로도 올리고, push를 30초 간격으로 3번까지 다시 시도한다 |
 
-수동 실행은 Actions 탭에서 `collect-night` → Run workflow. `once`를 켜면 1틱만 받고 끝나서 동작 확인용으로 쓸 수 있습니다.
-
-### 노트북 스케줄러는 백업
-
-작업 스케줄러에 `lastcall-collect`가 매일 21:55로 등록돼 있습니다. **첫날(9/16) 밤은 이걸로 돌립니다.** GitHub Actions는 9/17부터입니다.
-
-**둘을 동시에 돌리면 안 됩니다.** 하루 호출이 1,600건으로 한도 1,000을 넘어 키가 막히고 양쪽 다 죽습니다.
-
-전환 절차입니다.
-
-1. 9/17 22:05 KST에 Actions 탭에서 `collect-night`가 돌고 있는지 확인
-2. 돌고 있으면 노트북 작업을 끕니다. 그 시점까지 양쪽 합쳐 40콜 정도라 한도에 문제없습니다
-
-```powershell
-Disable-ScheduledTask -TaskName "lastcall-collect"
-```
-
-3. GitHub 예약이 건너뛴 날(Actions 탭에 그날 실행이 없으면)은 노트북 작업을 그날만 다시 켜서 돌립니다
-
-```powershell
-Enable-ScheduledTask -TaskName "lastcall-collect"
-```
-
-노트북으로 돌릴 때는 덮개를 닫지 말고 전원을 연결해 둡니다. 유휴 절전은 꺼져 있어 방치해도 되지만, 덮개 닫힘은 기본값이 절전입니다.
-
-### 매일 아침 확인
-
-Actions 탭에 어젯밤 실행이 초록색인지, `collected/`에 어젯밤 날짜 폴더가 생겼는지 봅니다. 압축 파일이 수 MB 이상이어야 정상입니다. 조용히 실패하는 게 가장 위험합니다.
+수동 실행은 Actions 탭 → `collect-night` → Run workflow. `once`를 켜면 1틱만 받고 끝난다. 다시 켜려면 `gh workflow enable collect-night`.

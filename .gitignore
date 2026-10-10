@@ -13,3 +13,6 @@ __pycache__/
 sample/
 web/node_modules/
 web/dist/
+
+# 로컬 전용 API 실험 스크립트(공개 저장소에 올리지 않기로 함)
+api_quickstart.py
